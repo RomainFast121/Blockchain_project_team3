@@ -9,6 +9,7 @@ import pandas as pd
 from module2_liquidity_distribution_analysis.liquidity_analysis import (
     build_tvl_decomposition,
     compute_concentration_metrics,
+    expand_liquidity_profile,
 )
 
 
@@ -87,6 +88,31 @@ class Module2AnalyticsTests(unittest.TestCase):
         self.assertEqual(len(decomposition), 1)
         total = decomposition.loc[0, "tvl_in_range"] + decomposition.loc[0, "tvl_above_range"] + decomposition.loc[0, "tvl_below_range"]
         self.assertAlmostEqual(total, decomposition.loc[0, "tvl_total"])
+
+    def test_profile_expansion_fills_missing_intervals(self) -> None:
+        initialized = pd.DataFrame(
+            [
+                {
+                    "snapshot_block": 1,
+                    "snapshot_timestamp": pd.Timestamp("2026-01-01", tz="UTC"),
+                    "tick": -20,
+                    "active_liquidity": 100,
+                    "price_lower": 0.0,
+                    "price_upper": 0.0,
+                },
+                {
+                    "snapshot_block": 1,
+                    "snapshot_timestamp": pd.Timestamp("2026-01-01", tz="UTC"),
+                    "tick": 10,
+                    "active_liquidity": 50,
+                    "price_lower": 0.0,
+                    "price_upper": 0.0,
+                },
+            ]
+        )
+        expanded = expand_liquidity_profile(initialized)
+        self.assertEqual(expanded["tick"].tolist(), [-20, -10, 0, 10])
+        self.assertEqual(expanded["active_liquidity"].tolist(), [100.0, 100.0, 100.0, 50.0])
 
 
 if __name__ == "__main__":

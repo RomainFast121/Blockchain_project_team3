@@ -11,7 +11,7 @@ from common.uniswap_math import (
     sqrt_price_x96_to_price_usdc_per_weth,
     tick_to_price_usdc_per_weth,
 )
-from module1_onchain_data_extraction.data_extraction import build_liquidity_snapshots
+from module1_onchain_data_extraction.data_extraction import build_liquidity_snapshots, resolve_study_window_blocks
 
 
 class Module1MathTests(unittest.TestCase):
@@ -88,6 +88,21 @@ class Module1LiquidityReplayTests(unittest.TestCase):
         self.assertEqual(final_snapshot["liquidityNet"].tolist(), [75, 50, -75, -50])
         self.assertEqual(final_snapshot["liquidityGross"].tolist(), [75, 50, 75, 50])
         self.assertEqual(final_snapshot["active_liquidity"].tolist(), [75, 125, 50, 0])
+
+    def test_study_window_end_block_stays_before_next_midnight(self) -> None:
+        class DummyClient:
+            def find_block_at_or_after(self, timestamp):  # noqa: ANN001
+                if str(timestamp).startswith("2026-01-01"):
+                    return 100
+                return 201
+
+        start_block, end_block = resolve_study_window_blocks(
+            client=DummyClient(),
+            study_start=pd.Timestamp("2026-01-01").date(),
+            study_end=pd.Timestamp("2026-01-01").date(),
+        )
+        self.assertEqual(start_block, 100)
+        self.assertEqual(end_block, 200)
 
 
 if __name__ == "__main__":

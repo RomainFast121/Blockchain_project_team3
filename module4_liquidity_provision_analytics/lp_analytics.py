@@ -139,7 +139,7 @@ def compute_fee_accruals(positions: pd.DataFrame, swap_events: pd.DataFrame) -> 
             & (swaps["block_timestamp"] <= position.exit_timestamp)
         ]
         for swap in position_swaps.itertuples(index=False):
-            in_range = position.price_lower <= float(swap.price_usdc_per_weth) <= position.price_upper
+            in_range = int(position.tick_lower) <= int(swap.tick) < int(position.tick_upper)
             if not in_range or float(swap.active_liquidity) <= 0:
                 continue
             share = float(position.liquidity_raw) / float(swap.active_liquidity)
@@ -158,9 +158,10 @@ def compute_fee_accruals(positions: pd.DataFrame, swap_events: pd.DataFrame) -> 
                     "fee_value_usd": fee_value_usd,
                 }
             )
-    fee_flows = pd.DataFrame(rows).sort_values(["position_id", "block_timestamp"]).reset_index(drop=True)
+    fee_flows = pd.DataFrame(rows)
     if fee_flows.empty:
         return fee_flows
+    fee_flows = fee_flows.sort_values(["position_id", "block_timestamp"]).reset_index(drop=True)
     fee_flows["cumulative_fee_income_usd"] = fee_flows.groupby("position_id")["fee_value_usd"].cumsum()
     return fee_flows
 
@@ -252,4 +253,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

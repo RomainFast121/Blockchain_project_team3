@@ -74,6 +74,30 @@ def load_module2_inputs(data_dir: Path) -> tuple[pd.DataFrame, pd.DataFrame, pd.
     return liquidity_snapshots, slot0_snapshots, mint_burn_events
 
 
+def expand_liquidity_profile(snapshot_frame: pd.DataFrame) -> pd.DataFrame:
+    """Expand initialized-tick rows into tick-spacing intervals with constant active liquidity."""
+    frame = snapshot_frame.sort_values("tick").reset_index(drop=True)
+    if frame.empty:
+        return frame
+
+    rows: list[dict[str, object]] = []
+    for index, row in enumerate(frame.itertuples(index=False)):
+        current_tick = int(row.tick)
+        next_tick = int(frame.iloc[index + 1]["tick"]) if index + 1 < len(frame) else current_tick + 10
+        for interval_tick in range(current_tick, next_tick, 10):
+            rows.append(
+                {
+                    "snapshot_block": int(row.snapshot_block),
+                    "snapshot_timestamp": row.snapshot_timestamp,
+                    "tick": interval_tick,
+                    "active_liquidity": float(row.active_liquidity),
+                    "price_lower": float(tick_to_price_usdc_per_weth(interval_tick)),
+                    "price_upper": float(tick_to_price_usdc_per_weth(interval_tick + 10)),
+                }
+            )
+    return pd.DataFrame(rows)
+
+
 def pick_reference_snapshots(slot0_snapshots: pd.DataFrame) -> dict[str, int]:
     """Pick the start, high-volatility, and end-of-window snapshot blocks."""
     ordered = slot0_snapshots.sort_values("snapshot_timestamp").reset_index(drop=True).copy()
@@ -148,24 +172,25 @@ def build_tvl_decomposition(mint_burn_events: pd.DataFrame, slot0_snapshots: pd.
 
 def compute_concentration_metrics(liquidity_snapshots: pd.DataFrame, slot0_snapshots: pd.DataFrame) -> pd.DataFrame:
     """Compute ILR(k) and L-HHI at every snapshot."""
-    merged = liquidity_snapshots.merge(
-        slot0_snapshots[["snapshot_block", "price_usdc_per_weth"]],
-        on="snapshot_block",
-        how="left",
-    )
-    merged["price_midpoint"] = (merged["price_lower"] * merged["price_upper"]) ** 0.5
     rows: list[dict[str, object]] = []
 
-    for snapshot_block, frame in merged.groupby("snapshot_block"):
-        frame = frame[frame["active_liquidity"] > 0].copy()
-        total_liquidity = float(frame["active_liquidity"].sum())
-        if total_liquidity == 0:
+    for snapshot_block, initialized_frame in liquidity_snapshots.groupby("snapshot_block"):
+        expanded_frame = expand_liquidity_profile(initialized_frame)
+        expanded_frame = expanded_frame.merge(
+            slot0_snapshots[["snapshot_block", "price_usdc_per_weth"]],
+            on="snapshot_block",
+            how="left",
+        )
+        expanded_frame["price_midpoint"] = (expanded_frame["price_lower"] * expanded_frame["price_upper"]) ** 0.5
+        expanded_frame = expanded_frame[expanded_frame["active_liquidity"] > 0].copy()
+        if expanded_frame.empty:
             continue
-        current_price = float(frame["price_usdc_per_weth"].iloc[0])
-        liquidity_shares = frame["active_liquidity"] / total_liquidity
+        total_liquidity = float(expanded_frame["active_liquidity"].sum())
+        current_price = float(expanded_frame["price_usdc_per_weth"].iloc[0])
+        liquidity_shares = expanded_frame["active_liquidity"] / total_liquidity
         row = {
             "snapshot_block": int(snapshot_block),
-            "snapshot_timestamp": frame["snapshot_timestamp"].iloc[0],
+            "snapshot_timestamp": expanded_frame["snapshot_timestamp"].iloc[0],
             "price_usdc_per_weth": current_price,
             "l_hhi": float((liquidity_shares ** 2).sum()),
         }
@@ -173,7 +198,9 @@ def compute_concentration_metrics(liquidity_snapshots: pd.DataFrame, slot0_snaps
             half_band = bandwidth / 100
             low = current_price * (1 - half_band)
             high = current_price * (1 + half_band)
-            in_band = frame[(frame["price_midpoint"] >= low) & (frame["price_midpoint"] <= high)]["active_liquidity"].sum()
+            in_band = expanded_frame[
+                (expanded_frame["price_midpoint"] >= low) & (expanded_frame["price_midpoint"] <= high)
+            ]["active_liquidity"].sum()
             row[f"ilr_{str(bandwidth).replace('.', '_')}pct"] = float(in_band / total_liquidity)
         rows.append(row)
     return pd.DataFrame(rows).sort_values("snapshot_timestamp").reset_index(drop=True)
@@ -196,7 +223,7 @@ def plot_liquidity_profiles(
 
     for axis, key in zip(axes, ["start", "high_volatility", "end"], strict=True):
         snapshot_block = snapshot_lookup[key]
-        frame = liquidity_snapshots[liquidity_snapshots["snapshot_block"] == snapshot_block].copy()
+        frame = expand_liquidity_profile(liquidity_snapshots[liquidity_snapshots["snapshot_block"] == snapshot_block])
         frame["price_midpoint"] = (frame["price_lower"] * frame["price_upper"]) ** 0.5
         axis.bar(frame["price_midpoint"], frame["active_liquidity"], width=frame["price_upper"] - frame["price_lower"], alpha=0.65)
         current_price = float(slot0_snapshots.loc[slot0_snapshots["snapshot_block"] == snapshot_block, "price_usdc_per_weth"].iloc[0])

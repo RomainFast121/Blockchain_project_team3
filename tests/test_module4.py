@@ -45,6 +45,8 @@ class Module4LPAnalyticsTests(unittest.TestCase):
     def test_fee_accruals_only_include_in_range_swaps(self) -> None:
         positions = build_representative_positions(self.slot0_snapshots)
         p4 = positions[positions["position_id"] == "P4"].reset_index(drop=True)
+        in_range_tick = int((p4.loc[0, "tick_lower"] + p4.loc[0, "tick_upper"]) // 2)
+        out_of_range_tick = int(p4.loc[0, "tick_upper"] + 10)
         swap_events = pd.DataFrame(
             [
                 {
@@ -52,6 +54,7 @@ class Module4LPAnalyticsTests(unittest.TestCase):
                     "block_timestamp": pd.Timestamp("2026-01-01 12:00:00", tz="UTC"),
                     "log_index": 0,
                     "trade_direction": "buy_weth",
+                    "tick": in_range_tick,
                     "price_usdc_per_weth": 2_000.0,
                     "amount0_usdc": 50_000.0,
                     "amount1_weth": -25.0,
@@ -62,6 +65,7 @@ class Module4LPAnalyticsTests(unittest.TestCase):
                     "block_timestamp": pd.Timestamp("2026-01-01 13:00:00", tz="UTC"),
                     "log_index": 0,
                     "trade_direction": "buy_weth",
+                    "tick": out_of_range_tick,
                     "price_usdc_per_weth": 5_000.0,
                     "amount0_usdc": 50_000.0,
                     "amount1_weth": -10.0,

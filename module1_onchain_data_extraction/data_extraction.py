@@ -28,9 +28,6 @@ from common.dates import UTC, date_range, utc_midnight
 from common.eth_rpc import EthereumArchiveClient
 from common.io_utils import ensure_directory, write_parquet
 from common.uniswap_math import (
-    align_tick_to_spacing,
-    amounts_for_liquidity,
-    raw_amounts_to_decimal,
     sqrt_price_x96_to_price_usdc_per_weth,
     tick_to_price_usdc_per_weth,
 )
@@ -108,6 +105,24 @@ def parse_args() -> argparse.Namespace:
 def _timestamp_map(client: EthereumArchiveClient, block_numbers: Iterable[int]) -> pd.DataFrame:
     timestamps = client.block_timestamps_frame(block_numbers)
     return timestamps.rename(columns={"block_number": "block_number", "block_timestamp": "block_timestamp"})
+
+
+def resolve_study_window_blocks(
+    client: EthereumArchiveClient,
+    study_start: date,
+    study_end: date,
+) -> tuple[int, int]:
+    """Return the inclusive block range for the study window.
+
+    The end block is chosen as the last block strictly before the next UTC midnight,
+    which prevents the extraction from leaking into the following day.
+    """
+    start_block = client.find_block_at_or_after(utc_midnight(study_start))
+    first_block_after_window = client.find_block_at_or_after(
+        utc_midnight(study_end) + pd.Timedelta(days=1)
+    )
+    end_block = max(first_block_after_window - 1, start_block)
+    return start_block, end_block
 
 
 def _signed_decimal(raw_value: int, decimals: int) -> float:
@@ -418,8 +433,11 @@ def run_module_1(
     paths = Module1Paths(output_dir=ensure_directory(output_dir))
     client = EthereumArchiveClient(rpc_url=rpc_url, pool_address=pool_address)
 
-    start_block = client.find_block_at_or_after(utc_midnight(study_start))
-    end_block = client.find_closest_block(utc_midnight(study_end.replace(day=study_end.day)) + pd.Timedelta(days=1))
+    start_block, end_block = resolve_study_window_blocks(
+        client=client,
+        study_start=study_start,
+        study_end=study_end,
+    )
 
     swap_events = _decode_swaps(client, start_block=start_block, end_block=end_block, chunk_size=log_chunk_size)
     mint_events = _decode_liquidity_events(
@@ -504,4 +522,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
