@@ -135,14 +135,20 @@ def prepare_hourly_market_data(perp_prices: pd.DataFrame, funding_rates: pd.Data
     prices = perp_prices.copy()
     if prices.empty:
         return pd.DataFrame(columns=HOURLY_MARKET_COLUMNS)
-    prices = prices.sort_values("timestamp").reset_index(drop=True)
+    prices["timestamp"] = pd.to_datetime(prices["timestamp"], utc=True).dt.floor("h")
+    prices = prices.sort_values("timestamp").drop_duplicates(subset=["timestamp"]).reset_index(drop=True)
 
     funding = funding_rates.copy()
     if funding.empty or "timestamp" not in funding.columns:
         prices["funding_rate"] = 0.0
         prices["cumulative_funding_rate"] = 0.0
         return prices.reindex(columns=HOURLY_MARKET_COLUMNS)
-    funding = funding.sort_values("timestamp").reset_index(drop=True)
+    funding["timestamp"] = pd.to_datetime(funding["timestamp"], utc=True).dt.floor("h")
+    funding = (
+        funding.sort_values("timestamp")
+        .groupby("timestamp", as_index=False)["funding_rate"]
+        .sum()
+    )
 
     if funding.empty:
         prices["funding_rate"] = 0.0
@@ -344,11 +350,30 @@ def plot_funding_environment(hourly_market: pd.DataFrame, path: Path) -> None:
     axes[0].set_ylabel("USDC per WETH")
     axes[0].legend(loc="upper left")
 
-    axes[1].plot(hourly_market["timestamp"], hourly_market["funding_rate"], color="steelblue", linewidth=1.0, label="Hourly funding")
-    axes[1].plot(hourly_market["timestamp"], hourly_market["cumulative_funding_rate"], color="darkorange", linewidth=1.5, label="Cumulative funding")
-    axes[1].set_ylabel("Funding rate")
-    axes[1].set_xlabel("Timestamp")
-    axes[1].legend(loc="upper left")
+    funding_bps = hourly_market["funding_rate"] * 10_000
+    cumulative_funding_bps = hourly_market["cumulative_funding_rate"] * 10_000
+    funding_axis = axes[1]
+    cumulative_axis = funding_axis.twinx()
+    hourly_line = funding_axis.plot(
+        hourly_market["timestamp"],
+        funding_bps,
+        color="steelblue",
+        linewidth=1.0,
+        label="Hourly funding (bps)",
+    )[0]
+    cumulative_line = cumulative_axis.plot(
+        hourly_market["timestamp"],
+        cumulative_funding_bps,
+        color="darkorange",
+        linewidth=1.5,
+        label="Cumulative funding (bps)",
+    )[0]
+    funding_axis.set_ylabel("Hourly funding (bps)", color="steelblue")
+    cumulative_axis.set_ylabel("Cumulative funding (bps)", color="darkorange")
+    funding_axis.set_xlabel("Timestamp")
+    funding_axis.tick_params(axis="y", colors="steelblue")
+    cumulative_axis.tick_params(axis="y", colors="darkorange")
+    funding_axis.legend([hourly_line, cumulative_line], [hourly_line.get_label(), cumulative_line.get_label()], loc="upper left")
     save_figure(fig, path)
 
 

@@ -334,6 +334,21 @@ def plot_liquidity_profiles(
         snapshot_block = snapshot_lookup[label]
         profile = expand_liquidity_profile(liquidity_snapshots[liquidity_snapshots["snapshot_block"] == snapshot_block]).copy()
         profile["price_midpoint"] = (profile["price_lower"] * profile["price_upper"]) ** 0.5
+        current_price = float(slot0_snapshots.loc[slot0_snapshots["snapshot_block"] == snapshot_block, "price_usdc_per_weth"].iloc[0])
+
+        # The raw snapshot can contain far-tail intervals and negative liquidity
+        # artefacts from the truncated smoke-test reconstruction. For the report
+        # figure we focus on positive-liquidity intervals in a sensible band
+        # around the current price so the actual profile is readable.
+        profile = profile.replace([np.inf, -np.inf], np.nan).dropna(subset=["price_lower", "price_upper", "price_midpoint", "active_liquidity"])
+        profile = profile[(profile["active_liquidity"] > 0) & (profile["price_midpoint"] > 0)].copy()
+
+        focus_band = profile[
+            (profile["price_midpoint"] >= current_price * 0.5)
+            & (profile["price_midpoint"] <= current_price * 1.5)
+        ].copy()
+        if not focus_band.empty:
+            profile = focus_band
 
         axis.bar(
             profile["price_midpoint"],
@@ -342,8 +357,12 @@ def plot_liquidity_profiles(
             alpha=0.65,
         )
 
-        current_price = float(slot0_snapshots.loc[slot0_snapshots["snapshot_block"] == snapshot_block, "price_usdc_per_weth"].iloc[0])
         axis.axvline(current_price, color="crimson", linestyle="--", linewidth=1.5, label="Current price")
+        if not profile.empty:
+            x_min = float(profile["price_lower"].min())
+            x_max = float(profile["price_upper"].max())
+            margin = (x_max - x_min) * 0.05 if x_max > x_min else current_price * 0.02
+            axis.set_xlim(x_min - margin, x_max + margin)
         axis.set_title(title_map[label])
         axis.set_xlabel("USDC per WETH")
 

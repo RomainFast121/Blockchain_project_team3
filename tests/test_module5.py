@@ -77,6 +77,24 @@ class Module5BacktestTests(unittest.TestCase):
         self.assertEqual(prepared.loc[0, "funding_rate"], 0.0)
         self.assertEqual(prepared.loc[0, "cumulative_funding_rate"], 0.0)
 
+    def test_prepare_hourly_market_data_aligns_millisecond_offset_funding(self) -> None:
+        candles = pd.DataFrame(
+            [
+                {"timestamp": pd.Timestamp("2026-01-01 00:00:00", tz="UTC"), "close": 2_000.0},
+                {"timestamp": pd.Timestamp("2026-01-01 01:00:00", tz="UTC"), "close": 2_010.0},
+            ]
+        )
+        funding = pd.DataFrame(
+            [
+                {"timestamp": pd.Timestamp("2026-01-01 00:00:00.098", tz="UTC"), "funding_rate": 0.0001},
+                {"timestamp": pd.Timestamp("2026-01-01 01:00:00.054", tz="UTC"), "funding_rate": 0.0002},
+            ]
+        )
+        prepared = prepare_hourly_market_data(candles, funding)
+        self.assertAlmostEqual(prepared.loc[0, "funding_rate"], 0.0001)
+        self.assertAlmostEqual(prepared.loc[1, "funding_rate"], 0.0002)
+        self.assertAlmostEqual(prepared.loc[1, "cumulative_funding_rate"], 0.0003)
+
     def test_backtest_outputs_expected_columns(self) -> None:
         hourly_market = pd.DataFrame(
             [
