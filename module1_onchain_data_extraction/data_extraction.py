@@ -19,9 +19,10 @@ import argparse
 import json
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from random import Random
+from time import monotonic
 from typing import Iterable
 
 import pandas as pd
@@ -74,6 +75,65 @@ class Module1Paths:
         return self.output_dir / "module1_validations.json"
 
 
+@dataclass
+class ProgressTracker:
+    """Print sparse progress updates during long live runs.
+
+    We keep this intentionally lightweight:
+    - one start line,
+    - then a periodic summary every N seconds,
+    - then one completion line.
+    """
+
+    label: str
+    start_block: int
+    end_block: int
+    progress_seconds: float
+    rows_seen: int = 0
+    chunks_seen: int = 0
+
+    def __post_init__(self) -> None:
+        self._started_at = monotonic()
+        self._last_print_at = self._started_at
+        self._block_span = max(1, self.end_block - self.start_block + 1)
+        print(
+            f"[{self.label}] starting blocks {self.start_block:,}-{self.end_block:,}",
+            flush=True,
+        )
+
+    def maybe_print(self, current_end_block: int) -> None:
+        """Emit one compact update if enough time has passed."""
+
+        if self.progress_seconds <= 0:
+            return
+
+        now = monotonic()
+        if now - self._last_print_at < self.progress_seconds:
+            return
+
+        completed_blocks = max(0, current_end_block - self.start_block + 1)
+        pct_complete = min(100.0, 100 * completed_blocks / self._block_span)
+        elapsed = now - self._started_at
+        print(
+            f"[{self.label}] {pct_complete:5.1f}% "
+            f"up to block {current_end_block:,} "
+            f"chunks={self.chunks_seen:,} rows={self.rows_seen:,} "
+            f"elapsed={elapsed:,.0f}s",
+            flush=True,
+        )
+        self._last_print_at = now
+
+    def finish(self) -> None:
+        """Emit one final summary line."""
+
+        elapsed = monotonic() - self._started_at
+        print(
+            f"[{self.label}] done rows={self.rows_seen:,} chunks={self.chunks_seen:,} "
+            f"elapsed={elapsed:,.0f}s",
+            flush=True,
+        )
+
+
 def parse_args() -> argparse.Namespace:
     """Parse CLI inputs for the extraction step."""
 
@@ -102,7 +162,10 @@ def parse_args() -> argparse.Namespace:
         "--log-chunk-size",
         type=int,
         default=DEFAULT_RPC_LOG_CHUNK,
-        help="Block range per eth_getLogs request.",
+        help=(
+            "Block range per eth_getLogs request. The default is intentionally "
+            "kept free-tier friendly; increase it only if your provider supports it."
+        ),
     )
     parser.add_argument(
         "--validation-seed",
@@ -110,7 +173,51 @@ def parse_args() -> argparse.Namespace:
         default=17,
         help="Random seed used for the tick validation sample.",
     )
+    parser.add_argument(
+        "--smoke-test-days",
+        type=int,
+        default=None,
+        help=(
+            "Optional small-window run used to confirm the live RPC pipeline works. "
+            "If provided, only the first N calendar days starting at --study-start are extracted."
+        ),
+    )
+    parser.add_argument(
+        "--progress-seconds",
+        type=float,
+        default=30.0,
+        help=(
+            "How often to print one compact progress update during long live runs. "
+            "Set to 0 to disable periodic progress messages."
+        ),
+    )
     return parser.parse_args()
+
+
+def apply_smoke_test_window(study_start: date, study_end: date, smoke_test_days: int | None) -> tuple[date, date]:
+    """Optionally shrink the study window for a quick live end-to-end check."""
+
+    if smoke_test_days is None:
+        return study_start, study_end
+    if smoke_test_days <= 0:
+        raise ValueError("--smoke-test-days must be a positive integer")
+
+    truncated_end = study_start + timedelta(days=smoke_test_days - 1)
+    return study_start, min(study_end, truncated_end)
+
+
+def liquidity_history_start_block(study_start_block: int, smoke_test_days: int | None) -> int:
+    """Choose where Mint/Burn/Collect history starts.
+
+    Full runs must scan from pool deployment because existing positions matter for
+    later snapshots. Smoke tests have a different purpose: confirm the pipeline
+    works end to end on a tiny slice. For that mode we intentionally cap the
+    history at the study start block so the check stays lightweight.
+    """
+
+    if smoke_test_days is None:
+        return POOL_DEPLOYMENT_BLOCK
+    return study_start_block
 
 
 # ---------------------------------------------------------------------------
@@ -151,10 +258,12 @@ def _decode_swap_events(
     start_block: int,
     end_block: int,
     chunk_size: int,
+    progress_seconds: float,
 ) -> pd.DataFrame:
     """Decode raw Swap logs into the clean table used throughout the project."""
 
     rows: list[dict[str, object]] = []
+    tracker = ProgressTracker("Swap", start_block, end_block, progress_seconds)
     for event in client.iter_event_logs("Swap", start_block, end_block, chunk_size):
         args = event["args"]
         amount0_raw = int(args["amount0"])
@@ -184,6 +293,10 @@ def _decode_swap_events(
                 "notional_usd": abs(amount0_usdc),
             }
         )
+        tracker.rows_seen += 1
+        tracker.maybe_print(int(event["block_number"]))
+    tracker.chunks_seen = max(1, (end_block - start_block + 1 + chunk_size - 1) // chunk_size)
+    tracker.finish()
 
     swaps = pd.DataFrame(rows).sort_values(["block_number", "log_index"]).reset_index(drop=True)
     swaps = _attach_block_timestamps(client, swaps)
@@ -216,10 +329,12 @@ def _decode_liquidity_events(
     start_block: int,
     end_block: int,
     chunk_size: int,
+    progress_seconds: float,
 ) -> pd.DataFrame:
     """Decode Mint or Burn logs into one uniform liquidity-event table."""
 
     rows: list[dict[str, object]] = []
+    tracker = ProgressTracker(event_name, start_block, end_block, progress_seconds)
     for event in client.iter_event_logs(event_name, start_block, end_block, chunk_size):
         args = event["args"]
         amount0_raw = int(args["amount0"])
@@ -240,7 +355,11 @@ def _decode_liquidity_events(
                 "amount1_weth": _signed_decimal(amount1_raw, TOKEN1_DECIMALS),
             }
         )
+        tracker.rows_seen += 1
+        tracker.maybe_print(int(event["block_number"]))
 
+    tracker.chunks_seen = max(1, (end_block - start_block + 1 + chunk_size - 1) // chunk_size)
+    tracker.finish()
     frame = pd.DataFrame(rows).sort_values(["block_number", "log_index"]).reset_index(drop=True)
     return _attach_block_timestamps(client, frame)
 
@@ -250,6 +369,7 @@ def _decode_collect_events(
     start_block: int,
     end_block: int,
     chunk_size: int,
+    progress_seconds: float,
 ) -> pd.DataFrame:
     """Decode Collect logs.
 
@@ -258,6 +378,7 @@ def _decode_collect_events(
     """
 
     rows: list[dict[str, object]] = []
+    tracker = ProgressTracker("Collect", start_block, end_block, progress_seconds)
     for event in client.iter_event_logs("Collect", start_block, end_block, chunk_size):
         args = event["args"]
         amount0_raw = int(args["amount0"])
@@ -277,7 +398,11 @@ def _decode_collect_events(
                 "amount1_weth": _signed_decimal(amount1_raw, TOKEN1_DECIMALS),
             }
         )
+        tracker.rows_seen += 1
+        tracker.maybe_print(int(event["block_number"]))
 
+    tracker.chunks_seen = max(1, (end_block - start_block + 1 + chunk_size - 1) // chunk_size)
+    tracker.finish()
     frame = pd.DataFrame(rows).sort_values(["block_number", "log_index"]).reset_index(drop=True)
     return _attach_block_timestamps(client, frame)
 
@@ -366,7 +491,18 @@ def build_liquidity_snapshots(mint_burn_events: pd.DataFrame, snapshot_blocks: p
     """Replay Mint/Burn history and rebuild the initialized ticks at each snapshot."""
 
     if mint_burn_events.empty or snapshot_blocks.empty:
-        return pd.DataFrame()
+        return pd.DataFrame(
+            columns=[
+                "snapshot_block",
+                "snapshot_timestamp",
+                "tick",
+                "liquidityNet",
+                "liquidityGross",
+                "active_liquidity",
+                "price_lower",
+                "price_upper",
+            ]
+        )
 
     tick_deltas = _tick_liquidity_deltas(mint_burn_events).sort_values(["block_number", "tick"]).reset_index(drop=True)
     snapshot_blocks = snapshot_blocks.sort_values("snapshot_block").reset_index(drop=True)
@@ -412,7 +548,19 @@ def build_liquidity_snapshots(mint_burn_events: pd.DataFrame, snapshot_blocks: p
                 }
             )
 
-    return pd.DataFrame(rows)
+    return pd.DataFrame(
+        rows,
+        columns=[
+            "snapshot_block",
+            "snapshot_timestamp",
+            "tick",
+            "liquidityNet",
+            "liquidityGross",
+            "active_liquidity",
+            "price_lower",
+            "price_upper",
+        ],
+    )
 
 
 def build_slot0_snapshots(client: EthereumArchiveClient, snapshot_blocks: pd.DataFrame) -> pd.DataFrame:
@@ -537,6 +685,8 @@ def run_module_1(
     output_dir: Path,
     log_chunk_size: int,
     validation_seed: int,
+    progress_seconds: float,
+    smoke_test_days: int | None = None,
 ) -> Module1Paths:
     """Execute the full Module 1 workflow."""
 
@@ -545,30 +695,53 @@ def run_module_1(
 
     # Step 1. Define the historical window in block space.
     start_block, end_block = resolve_study_window_blocks(client=client, study_start=study_start, study_end=study_end)
+    liquidity_start_block = liquidity_history_start_block(start_block, smoke_test_days)
+    print(
+        f"[Module1] study window {study_start.isoformat()} to {study_end.isoformat()} "
+        f"maps to blocks {start_block:,}-{end_block:,}",
+        flush=True,
+    )
+    if smoke_test_days is not None:
+        print(
+            "[Module1] smoke-test mode active: Mint/Burn/Collect history starts at the study window "
+            "instead of pool deployment",
+            flush=True,
+        )
 
     # Step 2. Download and decode the three event families used by the rest of
-    # the project. Mint/Burn start from pool deployment because open positions
-    # created before the study window still matter for the snapshots.
-    swap_events = _decode_swap_events(client, start_block=start_block, end_block=end_block, chunk_size=log_chunk_size)
+    # the project. Full runs start Mint/Burn from pool deployment because open
+    # positions created before the study window still matter for the snapshots.
+    # Smoke tests intentionally use a much smaller history to keep the sanity
+    # check practical on free-tier providers.
+    swap_events = _decode_swap_events(
+        client,
+        start_block=start_block,
+        end_block=end_block,
+        chunk_size=log_chunk_size,
+        progress_seconds=progress_seconds,
+    )
     mint_events = _decode_liquidity_events(
         client,
         event_name="Mint",
-        start_block=POOL_DEPLOYMENT_BLOCK,
+        start_block=liquidity_start_block,
         end_block=end_block,
         chunk_size=log_chunk_size,
+        progress_seconds=progress_seconds,
     )
     burn_events = _decode_liquidity_events(
         client,
         event_name="Burn",
-        start_block=POOL_DEPLOYMENT_BLOCK,
+        start_block=liquidity_start_block,
         end_block=end_block,
         chunk_size=log_chunk_size,
+        progress_seconds=progress_seconds,
     )
     collect_events = _decode_collect_events(
         client,
-        start_block=POOL_DEPLOYMENT_BLOCK,
+        start_block=liquidity_start_block,
         end_block=end_block,
         chunk_size=log_chunk_size,
+        progress_seconds=progress_seconds,
     )
 
     mint_burn_events = pd.concat([mint_events, burn_events], ignore_index=True)
@@ -577,7 +750,9 @@ def run_module_1(
     # Step 3. Rebuild one daily snapshot schedule and use it to reconstruct both
     # the liquidity map and the on-chain slot0 state.
     snapshot_blocks = _build_snapshot_schedule(client, study_start=study_start, study_end=study_end)
+    print(f"[Module1] building {len(snapshot_blocks):,} daily liquidity snapshots", flush=True)
     liquidity_snapshots = build_liquidity_snapshots(mint_burn_events, snapshot_blocks)
+    print(f"[Module1] fetching {len(snapshot_blocks):,} slot0 snapshots", flush=True)
     slot0_snapshots = build_slot0_snapshots(client, snapshot_blocks)
 
     # Step 4. Run the two validation checks requested in spirit by the PDF:
@@ -592,6 +767,7 @@ def run_module_1(
     write_parquet(liquidity_snapshots, paths.liquidity_snapshots)
     write_parquet(slot0_snapshots, paths.slot0_snapshots)
     paths.validations.write_text(json.dumps(_validation_summary(slot0_consistency, liquidity_validation), indent=2))
+    print(f"[Module1] outputs written to {paths.output_dir}", flush=True)
 
     return paths
 
@@ -600,14 +776,17 @@ def main() -> None:
     """CLI entry point."""
 
     args = parse_args()
+    study_start, study_end = apply_smoke_test_window(args.study_start, args.study_end, args.smoke_test_days)
     run_module_1(
         rpc_url=args.rpc_url,
         pool_address=args.pool_address,
-        study_start=args.study_start,
-        study_end=args.study_end,
+        study_start=study_start,
+        study_end=study_end,
         output_dir=args.output_dir,
         log_chunk_size=args.log_chunk_size,
         validation_seed=args.validation_seed,
+        progress_seconds=max(0.0, args.progress_seconds),
+        smoke_test_days=args.smoke_test_days,
     )
 
 

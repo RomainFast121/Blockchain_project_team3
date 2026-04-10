@@ -21,7 +21,7 @@ POOL_ABI = [
     {
         "anonymous": False,
         "inputs": [
-            {"indexed": True, "internalType": "address", "name": "sender", "type": "address"},
+            {"indexed": False, "internalType": "address", "name": "sender", "type": "address"},
             {"indexed": True, "internalType": "address", "name": "owner", "type": "address"},
             {"indexed": True, "internalType": "int24", "name": "tickLower", "type": "int24"},
             {"indexed": True, "internalType": "int24", "name": "tickUpper", "type": "int24"},
@@ -90,4 +90,3 @@ POOL_ABI = [
         "type": "function",
     },
 ]
-

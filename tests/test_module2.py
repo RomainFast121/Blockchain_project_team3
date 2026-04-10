@@ -165,6 +165,48 @@ class Module2AnalyticsTests(unittest.TestCase):
         }
         self.assertTrue(expected_columns.issubset(set(metrics.columns)))
 
+    def test_empty_liquidity_snapshots_do_not_crash_metrics(self) -> None:
+        empty_liquidity = pd.DataFrame(
+            columns=[
+                "snapshot_block",
+                "snapshot_timestamp",
+                "tick",
+                "liquidityNet",
+                "liquidityGross",
+                "active_liquidity",
+                "price_lower",
+                "price_upper",
+            ]
+        )
+        slot0_snapshots = pd.DataFrame(
+            [
+                {
+                    "snapshot_block": 1,
+                    "snapshot_timestamp": pd.Timestamp("2026-01-01", tz="UTC"),
+                    "sqrtPriceX96": 0,
+                    "price_usdc_per_weth": 2_000.0,
+                    "current_tick": 0,
+                }
+            ]
+        )
+
+        metrics = compute_concentration_metrics(empty_liquidity, slot0_snapshots)
+        self.assertEqual(
+            metrics.columns.tolist(),
+            [
+                "snapshot_block",
+                "snapshot_timestamp",
+                "price_usdc_per_weth",
+                "l_hhi",
+                "ilr_0_1pct",
+                "ilr_0_5pct",
+                "ilr_1_0pct",
+                "ilr_2_0pct",
+                "ilr_5_0pct",
+            ],
+        )
+        self.assertTrue(metrics.empty)
+
 
 if __name__ == "__main__":
     unittest.main()

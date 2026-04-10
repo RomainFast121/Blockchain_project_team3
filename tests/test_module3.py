@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import unittest
 
 import pandas as pd
@@ -47,6 +48,23 @@ class Module3SwapSimulatorTests(unittest.TestCase):
     def test_invalid_direction_raises_clear_error(self) -> None:
         with self.assertRaises(ValueError):
             simulate_exact_input_swap(self.state, direction="hold", notional_usd=10_000)
+
+    def test_zero_liquidity_returns_nan_metrics_instead_of_crashing(self) -> None:
+        empty_state = SnapshotPoolState(
+            snapshot_block=2,
+            snapshot_timestamp=pd.Timestamp("2026-01-02", tz="UTC"),
+            sqrt_price_x96=price_usdc_per_weth_to_sqrt_price_x96(2_000),
+            current_tick=0,
+            current_price=2_000.0,
+            active_liquidity=0,
+            initialized_ticks=(),
+            liquidity_net_by_tick={},
+        )
+
+        result = simulate_exact_input_swap(empty_state, direction="buy_weth", notional_usd=10_000)
+        self.assertTrue(math.isnan(result.average_price))
+        self.assertTrue(math.isnan(result.price_impact_bps))
+        self.assertTrue(math.isnan(result.slippage_bps))
 
 
 if __name__ == "__main__":

@@ -11,7 +11,11 @@ from common.uniswap_math import (
     sqrt_price_x96_to_price_usdc_per_weth,
     tick_to_price_usdc_per_weth,
 )
-from module1_onchain_data_extraction.data_extraction import build_liquidity_snapshots, resolve_study_window_blocks
+from module1_onchain_data_extraction.data_extraction import (
+    apply_smoke_test_window,
+    build_liquidity_snapshots,
+    resolve_study_window_blocks,
+)
 
 
 class Module1MathTests(unittest.TestCase):
@@ -89,6 +93,27 @@ class Module1LiquidityReplayTests(unittest.TestCase):
         self.assertEqual(final_snapshot["liquidityGross"].tolist(), [75, 50, 75, 50])
         self.assertEqual(final_snapshot["active_liquidity"].tolist(), [75, 125, 50, 0])
 
+    def test_empty_liquidity_snapshot_keeps_expected_schema(self) -> None:
+        snapshots = build_liquidity_snapshots(
+            mint_burn_events=pd.DataFrame(),
+            snapshot_blocks=pd.DataFrame(
+                [{"snapshot_block": 1, "snapshot_timestamp": pd.Timestamp("2026-01-01", tz="UTC")}]
+            ),
+        )
+        self.assertEqual(
+            snapshots.columns.tolist(),
+            [
+                "snapshot_block",
+                "snapshot_timestamp",
+                "tick",
+                "liquidityNet",
+                "liquidityGross",
+                "active_liquidity",
+                "price_lower",
+                "price_upper",
+            ],
+        )
+
     def test_study_window_end_block_stays_before_next_midnight(self) -> None:
         class DummyClient:
             def find_block_at_or_after(self, timestamp):  # noqa: ANN001
@@ -103,6 +128,15 @@ class Module1LiquidityReplayTests(unittest.TestCase):
         )
         self.assertEqual(start_block, 100)
         self.assertEqual(end_block, 200)
+
+    def test_smoke_test_window_truncates_end_date(self) -> None:
+        start, end = apply_smoke_test_window(
+            study_start=pd.Timestamp("2026-01-01").date(),
+            study_end=pd.Timestamp("2026-01-31").date(),
+            smoke_test_days=3,
+        )
+        self.assertEqual(start, pd.Timestamp("2026-01-01").date())
+        self.assertEqual(end, pd.Timestamp("2026-01-03").date())
 
 
 if __name__ == "__main__":

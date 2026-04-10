@@ -203,15 +203,27 @@ def _build_result(
     if zero_for_one:
         amount_in_decimal = float(total_input_raw / (Decimal(10) ** TOKEN0_DECIMALS))
         amount_out_decimal = float(total_output_raw / (Decimal(10) ** TOKEN1_DECIMALS))
-        average_price = amount_in_decimal / amount_out_decimal
-        price_impact_bps = ((average_price / state.current_price) - 1.0) * 10_000
+        if amount_out_decimal <= 0:
+            average_price = float("nan")
+            price_impact_bps = float("nan")
+        else:
+            average_price = amount_in_decimal / amount_out_decimal
+            price_impact_bps = ((average_price / state.current_price) - 1.0) * 10_000
     else:
         amount_in_decimal = float(total_input_raw / (Decimal(10) ** TOKEN1_DECIMALS))
         amount_out_decimal = float(total_output_raw / (Decimal(10) ** TOKEN0_DECIMALS))
-        average_price = amount_out_decimal / amount_in_decimal
-        price_impact_bps = ((state.current_price / average_price) - 1.0) * 10_000
+        if amount_in_decimal <= 0:
+            average_price = float("nan")
+            price_impact_bps = float("nan")
+        else:
+            average_price = amount_out_decimal / amount_in_decimal
+            price_impact_bps = ((state.current_price / average_price) - 1.0) * 10_000
 
-    slippage_bps = max(price_impact_bps - float(FEE_RATE * Decimal(10_000)), 0.0)
+    slippage_bps = (
+        max(price_impact_bps - float(FEE_RATE * Decimal(10_000)), 0.0)
+        if price_impact_bps == price_impact_bps
+        else float("nan")
+    )
     ending_price = float(sqrt_price_x96_to_price_usdc_per_weth(int(ending_sqrt_price_x96)))
 
     return SwapSimulationResult(

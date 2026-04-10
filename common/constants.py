@@ -38,7 +38,12 @@ TOKEN1_DECIMALS = 18
 UNISWAP_V3_MIN_TICK = -887_272
 UNISWAP_V3_MAX_TICK = 887_272
 
-DEFAULT_RPC_LOG_CHUNK = 5_000
+# Alchemy free tier currently allows `eth_getLogs` on at most a 10-block range.
+# Users on stronger/archive plans can still override this from the CLI.
+DEFAULT_RPC_LOG_CHUNK = 10
+DEFAULT_RPC_RETRY_ATTEMPTS = 6
+DEFAULT_RPC_RETRY_BASE_DELAY_SECONDS = 0.75
+DEFAULT_RPC_REQUEST_SPACING_SECONDS = 0.10
 DEFAULT_HYPERLIQUID_PAGE_HOURS = 4_800
 
 

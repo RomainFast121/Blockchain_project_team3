@@ -13,17 +13,25 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from time import sleep
 from typing import Any, Iterable
 
 import pandas as pd
+from requests import HTTPError
 from eth_utils import event_abi_to_log_topic
 from web3 import Web3
 from web3._utils.events import get_event_data
 
+from common.constants import (
+    DEFAULT_RPC_REQUEST_SPACING_SECONDS,
+    DEFAULT_RPC_RETRY_ATTEMPTS,
+    DEFAULT_RPC_RETRY_BASE_DELAY_SECONDS,
+)
 from common.uniswap_abi import POOL_ABI
 
 
 UTC = timezone.utc
+DEFAULT_INITIAL_ADAPTIVE_LOG_CHUNK = 128
 
 
 def _event_abi_map() -> dict[str, dict[str, Any]]:
@@ -39,6 +47,9 @@ class EthereumArchiveClient:
     rpc_url: str
     pool_address: str
     _timestamp_cache: dict[int, datetime] = field(default_factory=dict)
+    request_spacing_seconds: float = DEFAULT_RPC_REQUEST_SPACING_SECONDS
+    retry_attempts: int = DEFAULT_RPC_RETRY_ATTEMPTS
+    retry_base_delay_seconds: float = DEFAULT_RPC_RETRY_BASE_DELAY_SECONDS
 
     def __post_init__(self) -> None:
         self.web3 = Web3(Web3.HTTPProvider(self.rpc_url))
@@ -68,14 +79,13 @@ class EthereumArchiveClient:
 
         event_abi = self._event_abi_by_name[event_name]
         topic0 = event_abi_to_log_topic(event_abi)
-        raw_logs = self.web3.eth.get_logs(
-            {
-                "address": self.pool_address,
-                "fromBlock": int(from_block),
-                "toBlock": int(to_block),
-                "topics": [topic0],
-            }
-        )
+        filter_params = {
+            "address": self.pool_address,
+            "fromBlock": int(from_block),
+            "toBlock": int(to_block),
+            "topics": [topic0],
+        }
+        raw_logs = self._get_logs_with_retry(filter_params)
 
         decoded_logs: list[dict[str, Any]] = []
         for raw_log in raw_logs:
@@ -91,6 +101,51 @@ class EthereumArchiveClient:
             )
         return decoded_logs
 
+    def _get_logs_with_retry(self, filter_params: dict[str, Any]) -> list[dict[str, Any]]:
+        """Call `eth_getLogs` with gentle pacing and retry on provider throttling."""
+
+        attempt = 0
+        while True:
+            if self.request_spacing_seconds > 0:
+                sleep(self.request_spacing_seconds)
+            try:
+                return self.web3.eth.get_logs(filter_params)
+            except HTTPError as exc:
+                status_code = getattr(getattr(exc, "response", None), "status_code", None)
+                if status_code != 429 or attempt >= self.retry_attempts:
+                    raise
+
+                sleep(self.retry_base_delay_seconds * (2**attempt))
+                attempt += 1
+
+    def get_logs_with_auto_split(self, event_name: str, from_block: int, to_block: int) -> list[dict[str, Any]]:
+        """Fetch logs and recursively split the block range if the RPC rejects it.
+
+        This matters for busy contracts such as the USDC/WETH 0.05% pool: a
+        provider may reject a valid `eth_getLogs` request simply because the
+        response would contain too many logs. Splitting ranges automatically makes
+        the project much easier to run on free-tier plans.
+        """
+
+        start = int(from_block)
+        end = int(to_block)
+        if start > end:
+            return []
+
+        try:
+            return self.get_logs(event_name=event_name, from_block=start, to_block=end)
+        except HTTPError:
+            if start == end:
+                raise
+        except ValueError:
+            if start == end:
+                raise
+
+        midpoint = (start + end) // 2
+        left_logs = self.get_logs_with_auto_split(event_name=event_name, from_block=start, to_block=midpoint)
+        right_logs = self.get_logs_with_auto_split(event_name=event_name, from_block=midpoint + 1, to_block=end)
+        return left_logs + right_logs
+
     def iter_event_logs(
         self,
         event_name: str,
@@ -102,11 +157,40 @@ class EthereumArchiveClient:
 
         start = int(from_block)
         end = int(to_block)
+        max_chunk_size = max(1, int(chunk_size))
+
+        # We intentionally start smaller than the user-provided ceiling. For a
+        # busy pool, this avoids immediately hammering the provider with ranges
+        # that are known to be too large for free-tier plans.
+        current_chunk_size = min(max_chunk_size, DEFAULT_INITIAL_ADAPTIVE_LOG_CHUNK)
+
         while start <= end:
-            stop = min(start + chunk_size - 1, end)
-            for decoded_log in self.get_logs(event_name=event_name, from_block=start, to_block=stop):
+            stop = min(start + current_chunk_size - 1, end)
+            attempted_span = stop - start + 1
+
+            try:
+                decoded_logs = self.get_logs_with_auto_split(event_name=event_name, from_block=start, to_block=stop)
+            except ValueError:
+                if attempted_span == 1:
+                    raise
+
+                # Learn from the failure and retry the same starting block with a
+                # smaller window instead of repeatedly resetting to the original
+                # chunk size.
+                current_chunk_size = max(1, attempted_span // 2)
+                continue
+
+            for decoded_log in decoded_logs:
                 yield decoded_log
+
             start = stop + 1
+
+            # Empty spans can safely grow again, which matters when moving from
+            # busy to calm periods. Dense successful spans keep the current size.
+            if not decoded_logs and current_chunk_size < max_chunk_size:
+                current_chunk_size = min(max_chunk_size, attempted_span * 2)
+            elif len(decoded_logs) >= 50 and attempted_span > 1:
+                current_chunk_size = max(1, attempted_span // 2)
 
     def find_block_at_or_after(self, timestamp: datetime) -> int:
         """Binary-search the first block whose timestamp is at or after a target."""

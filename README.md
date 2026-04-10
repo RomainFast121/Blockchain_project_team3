@@ -50,6 +50,22 @@ expects the outputs of the previous ones to already exist.
   --rpc-url "YOUR_ARCHIVE_RPC_URL"
 ```
 
+The default `eth_getLogs` chunk size is set to a free-tier friendly value. If
+you are using Alchemy free tier, do not increase it above `10`.
+
+If you want to confirm that the live RPC pipeline works before attempting the
+full six-month extraction, run a tiny smoke-test window first:
+
+```bash
+.venv/bin/python -m module1_onchain_data_extraction.data_extraction \
+  --rpc-url "YOUR_ARCHIVE_RPC_URL" \
+  --smoke-test-days 1
+```
+
+In smoke-test mode, Module 1 also limits Mint/Burn/Collect history to the same
+small window. This keeps the check practical on free-tier providers. The full
+PDF-aligned run still uses pool-deployment history for liquidity reconstruction.
+
 2. Module 2
 
 ```bash

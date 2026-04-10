@@ -87,9 +87,12 @@ def load_module2_inputs(data_dir: Path) -> tuple[pd.DataFrame, pd.DataFrame, pd.
     slot0_snapshots = read_parquet(data_dir / "slot0_snapshots.parquet")
     mint_burn_events = read_parquet(data_dir / "mint_burn_events.parquet")
 
-    liquidity_snapshots["snapshot_timestamp"] = pd.to_datetime(liquidity_snapshots["snapshot_timestamp"], utc=True)
-    slot0_snapshots["snapshot_timestamp"] = pd.to_datetime(slot0_snapshots["snapshot_timestamp"], utc=True)
-    mint_burn_events["block_timestamp"] = pd.to_datetime(mint_burn_events["block_timestamp"], utc=True)
+    if "snapshot_timestamp" in liquidity_snapshots.columns:
+        liquidity_snapshots["snapshot_timestamp"] = pd.to_datetime(liquidity_snapshots["snapshot_timestamp"], utc=True)
+    if "snapshot_timestamp" in slot0_snapshots.columns:
+        slot0_snapshots["snapshot_timestamp"] = pd.to_datetime(slot0_snapshots["snapshot_timestamp"], utc=True)
+    if "block_timestamp" in mint_burn_events.columns:
+        mint_burn_events["block_timestamp"] = pd.to_datetime(mint_burn_events["block_timestamp"], utc=True)
     return liquidity_snapshots, slot0_snapshots, mint_burn_events
 
 
@@ -104,7 +107,16 @@ def expand_liquidity_profile(snapshot_frame: pd.DataFrame) -> pd.DataFrame:
 
     initialized_ticks = snapshot_frame.sort_values("tick").reset_index(drop=True)
     if initialized_ticks.empty:
-        return initialized_ticks
+        return pd.DataFrame(
+            columns=[
+                "snapshot_block",
+                "snapshot_timestamp",
+                "tick",
+                "active_liquidity",
+                "price_lower",
+                "price_upper",
+            ]
+        )
 
     rows: list[dict[str, object]] = []
     for row_index, tick_row in enumerate(initialized_ticks.itertuples(index=False)):
@@ -127,7 +139,17 @@ def expand_liquidity_profile(snapshot_frame: pd.DataFrame) -> pd.DataFrame:
                 }
             )
 
-    return pd.DataFrame(rows)
+    return pd.DataFrame(
+        rows,
+        columns=[
+            "snapshot_block",
+            "snapshot_timestamp",
+            "tick",
+            "active_liquidity",
+            "price_lower",
+            "price_upper",
+        ],
+    )
 
 
 def pick_reference_snapshots(slot0_snapshots: pd.DataFrame) -> dict[str, int]:
@@ -225,6 +247,21 @@ def build_tvl_decomposition(mint_burn_events: pd.DataFrame, slot0_snapshots: pd.
 def compute_concentration_metrics(liquidity_snapshots: pd.DataFrame, slot0_snapshots: pd.DataFrame) -> pd.DataFrame:
     """Compute liquidity HHI and ILR(k) for every daily snapshot."""
 
+    if liquidity_snapshots.empty:
+        return pd.DataFrame(
+            columns=[
+                "snapshot_block",
+                "snapshot_timestamp",
+                "price_usdc_per_weth",
+                "l_hhi",
+                "ilr_0_1pct",
+                "ilr_0_5pct",
+                "ilr_1_0pct",
+                "ilr_2_0pct",
+                "ilr_5_0pct",
+            ]
+        )
+
     rows: list[dict[str, object]] = []
     price_lookup = slot0_snapshots[["snapshot_block", "price_usdc_per_weth"]]
 
@@ -259,7 +296,22 @@ def compute_concentration_metrics(liquidity_snapshots: pd.DataFrame, slot0_snaps
 
         rows.append(metric_row)
 
-    return pd.DataFrame(rows).sort_values("snapshot_timestamp").reset_index(drop=True)
+    metrics = pd.DataFrame(rows)
+    if metrics.empty:
+        return pd.DataFrame(
+            columns=[
+                "snapshot_block",
+                "snapshot_timestamp",
+                "price_usdc_per_weth",
+                "l_hhi",
+                "ilr_0_1pct",
+                "ilr_0_5pct",
+                "ilr_1_0pct",
+                "ilr_2_0pct",
+                "ilr_5_0pct",
+            ]
+        )
+    return metrics.sort_values("snapshot_timestamp").reset_index(drop=True)
 
 
 def plot_liquidity_profiles(
