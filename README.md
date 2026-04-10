@@ -31,13 +31,7 @@ The intended reading order is the same as the PDF:
 
 Tested locally with Python `3.13.7`.
 
-All commands below assume you are inside the project root:
-
-```bash
-cd /Users/romain/Documents/Epfl/MA2/Blockchain/project
-```
-
-Create and populate the environment with:
+Create and populate a local environment from the repository root with:
 
 ```bash
 python3 -m venv .venv
@@ -46,8 +40,8 @@ python3 -m venv .venv
 
 ## Execution order
 
-Run the modules in the exact order below. Each module expects the outputs of the
-previous ones to already exist.
+Run the modules in the exact order below from the repository root. Each module
+expects the outputs of the previous ones to already exist.
 
 1. Module 1
 
@@ -85,7 +79,7 @@ Generated parquet files are written under `data/processed/` and generated figure
 
 ## Verification
 
-Run the test suite from the project root with explicit writable cache paths:
+Run the test suite from the repository root with explicit writable cache paths:
 
 ```bash
 XDG_CACHE_HOME=.cache MPLCONFIGDIR=.cache/matplotlib .venv/bin/python -m unittest discover -s tests
