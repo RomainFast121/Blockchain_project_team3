@@ -7,6 +7,8 @@ import unittest
 import pandas as pd
 
 from module4_liquidity_provision_analytics.lp_analytics import (
+    FEE_ACCRUAL_COLUMNS,
+    POSITION_TIMESERIES_COLUMNS,
     build_position_timeseries,
     build_representative_positions,
     compute_fee_accruals,
@@ -100,6 +102,29 @@ class Module4LPAnalyticsTests(unittest.TestCase):
             "net_pnl_usd",
         }
         self.assertTrue(expected_columns.issubset(set(timeseries.columns)))
+
+    def test_empty_fee_accruals_keep_expected_schema(self) -> None:
+        positions = build_representative_positions(self.slot0_snapshots)
+        empty_swaps = pd.DataFrame(
+            columns=[
+                "block_number",
+                "block_timestamp",
+                "log_index",
+                "trade_direction",
+                "tick",
+                "price_usdc_per_weth",
+                "amount0_usdc",
+                "amount1_weth",
+                "active_liquidity",
+            ]
+        )
+        fee_accruals = compute_fee_accruals(positions, empty_swaps)
+        self.assertListEqual(list(fee_accruals.columns), FEE_ACCRUAL_COLUMNS)
+        self.assertTrue(fee_accruals.empty)
+
+        timeseries = build_position_timeseries(positions, self.slot0_snapshots, fee_accruals)
+        self.assertListEqual(list(timeseries.columns), POSITION_TIMESERIES_COLUMNS)
+        self.assertFalse(timeseries.empty)
 
 
 if __name__ == "__main__":

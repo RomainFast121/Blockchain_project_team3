@@ -42,6 +42,29 @@ from common.uniswap_math import (
 
 
 TARGET_POSITION_BUDGET = 100_000
+FEE_ACCRUAL_COLUMNS = [
+    "position_id",
+    "block_number",
+    "block_timestamp",
+    "trade_direction",
+    "swap_price_usdc_per_weth",
+    "fee_usdc",
+    "fee_weth",
+    "fee_value_usd",
+    "cumulative_fee_income_usd",
+]
+POSITION_TIMESERIES_COLUMNS = [
+    "position_id",
+    "position_label",
+    "snapshot_block",
+    "snapshot_timestamp",
+    "price_usdc_per_weth",
+    "lp_principal_usd",
+    "hodl_value_usd",
+    "impermanent_loss_usd",
+    "cumulative_fee_income_usd",
+    "net_pnl_usd",
+]
 
 
 @dataclass(frozen=True)
@@ -191,11 +214,11 @@ def compute_fee_accruals(positions: pd.DataFrame, swap_events: pd.DataFrame) -> 
 
     fee_flows = pd.DataFrame(rows)
     if fee_flows.empty:
-        return fee_flows
+        return pd.DataFrame(columns=FEE_ACCRUAL_COLUMNS)
 
     fee_flows = fee_flows.sort_values(["position_id", "block_timestamp"]).reset_index(drop=True)
     fee_flows["cumulative_fee_income_usd"] = fee_flows.groupby("position_id")["fee_value_usd"].cumsum()
-    return fee_flows
+    return fee_flows.reindex(columns=FEE_ACCRUAL_COLUMNS)
 
 
 def build_position_timeseries(
@@ -246,7 +269,7 @@ def build_position_timeseries(
                 }
             )
 
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows, columns=POSITION_TIMESERIES_COLUMNS)
 
 
 def plot_position_lines(timeseries: pd.DataFrame, value_column: str, title: str, y_label: str, path: Path) -> None:
