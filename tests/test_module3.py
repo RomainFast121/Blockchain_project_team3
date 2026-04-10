@@ -8,6 +8,10 @@ import unittest
 import pandas as pd
 
 from common.uniswap_math import price_usdc_per_weth_to_sqrt_price_x96
+from module3_slippage_simulation_and_execution_cost.slippage_analysis import (
+    SIMULATED_TRADES_COLUMNS,
+    run_simulation_grid,
+)
 from module3_slippage_simulation_and_execution_cost.swap_simulator import (
     SnapshotPoolState,
     simulate_exact_input_swap,
@@ -65,6 +69,11 @@ class Module3SwapSimulatorTests(unittest.TestCase):
         self.assertTrue(math.isnan(result.average_price))
         self.assertTrue(math.isnan(result.price_impact_bps))
         self.assertTrue(math.isnan(result.slippage_bps))
+
+    def test_empty_simulation_grid_keeps_expected_schema(self) -> None:
+        result = run_simulation_grid({})
+        self.assertListEqual(list(result.columns), SIMULATED_TRADES_COLUMNS)
+        self.assertTrue(result.empty)
 
 
 if __name__ == "__main__":

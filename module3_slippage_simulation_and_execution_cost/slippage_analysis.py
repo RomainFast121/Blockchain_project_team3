@@ -31,6 +31,18 @@ from module3_slippage_simulation_and_execution_cost.swap_simulator import Snapsh
 
 
 SIMULATION_SIZES = [1_000, 10_000, 50_000, 100_000, 250_000, 500_000, 1_000_000]
+SIMULATED_TRADES_COLUMNS = [
+    "snapshot_block",
+    "snapshot_timestamp",
+    "direction",
+    "notional_usd",
+    "average_price",
+    "pool_mid_price",
+    "price_impact_bps",
+    "slippage_bps",
+    "tick_crosses",
+    "ending_price",
+]
 
 
 @dataclass(frozen=True)
@@ -140,7 +152,7 @@ def run_simulation_grid(snapshot_states: dict[int, SnapshotPoolState]) -> pd.Dat
                         "ending_price": result.ending_price,
                     }
                 )
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows, columns=SIMULATED_TRADES_COLUMNS)
 
 
 def _assign_bucket(notional_usd: float) -> int:
