@@ -133,6 +133,28 @@ class Module5BacktestTests(unittest.TestCase):
         )
         self.assertEqual(fees["lp_fee_income_usd"].tolist(), [0.0, 50.0, 50.0])
 
+    def test_hourly_fee_series_handles_timestamp_precision_mismatch(self) -> None:
+        hourly_timestamps = pd.Series(
+            pd.to_datetime(
+                ["2026-01-01 00:00:00", "2026-01-01 01:00:00"],
+                utc=True,
+            ).astype("datetime64[ms, UTC]")
+        )
+        fees = build_hourly_fee_series(
+            self.positions,
+            pd.DataFrame(
+                [
+                    {
+                        "position_id": "P3",
+                        "block_timestamp": pd.Timestamp("2026-01-01 00:30:00", tz="UTC"),
+                        "cumulative_fee_income_usd": 25.0,
+                    }
+                ]
+            ),
+            hourly_timestamps,
+        )
+        self.assertEqual(fees["lp_fee_income_usd"].tolist(), [0.0, 25.0])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -158,7 +158,9 @@ def prepare_hourly_market_data(perp_prices: pd.DataFrame, funding_rates: pd.Data
 def build_hourly_fee_series(positions: pd.DataFrame, fee_accruals: pd.DataFrame, hourly_timestamps: pd.Series) -> pd.DataFrame:
     """Forward-fill cumulative LP fee income onto the hourly hedging grid."""
 
-    base_hourly_index = pd.DataFrame({"timestamp": hourly_timestamps.sort_values().drop_duplicates()})
+    base_hourly_index = pd.DataFrame({"timestamp": pd.to_datetime(hourly_timestamps, utc=True)})
+    base_hourly_index["timestamp"] = base_hourly_index["timestamp"].astype("datetime64[ns, UTC]")
+    base_hourly_index = base_hourly_index.sort_values("timestamp").drop_duplicates().reset_index(drop=True)
     rows: list[dict[str, object]] = []
 
     for position in positions.itertuples(index=False):
@@ -172,6 +174,7 @@ def build_hourly_fee_series(positions: pd.DataFrame, fee_accruals: pd.DataFrame,
 
         position_flows = position_flows.sort_values("block_timestamp")
         position_flows = position_flows[["block_timestamp", "cumulative_fee_income_usd"]].rename(columns={"block_timestamp": "timestamp"})
+        position_flows["timestamp"] = pd.to_datetime(position_flows["timestamp"], utc=True).astype("datetime64[ns, UTC]")
         merged = pd.merge_asof(
             base_hourly_index.sort_values("timestamp"),
             position_flows.sort_values("timestamp"),
