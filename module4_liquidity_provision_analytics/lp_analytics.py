@@ -1,10 +1,21 @@
-"""Module 4: synthetic LP fee income, impermanent loss, and net P&L."""
+"""Module 4: analyse the pool from the LP point of view.
+
+This module creates the five representative LP positions described in the PDF
+and tracks three quantities through time:
+
+- cumulative fee income,
+- impermanent loss relative to a HODL benchmark,
+- net P&L defined as fee income minus impermanent loss.
+
+The implementation stays close to the report story:
+`define positions -> assign fee income -> mark positions over time -> save
+tables -> draw figures`.
+"""
 
 from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
-from decimal import Decimal
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -25,9 +36,8 @@ from common.uniswap_math import (
     align_tick_to_spacing,
     price_usdc_per_weth_to_tick,
     solve_liquidity_for_budget,
-    synthetic_lp_amounts,
     synthetic_lp_value,
-    tick_to_price_usdc_per_weth,
+    tick_interval_prices,
 )
 
 
@@ -36,7 +46,7 @@ TARGET_POSITION_BUDGET = 100_000
 
 @dataclass(frozen=True)
 class Module4Paths:
-    """Output paths for Module 4 artifacts."""
+    """All files produced by Module 4."""
 
     data_dir: Path
     figure_dir: Path
@@ -68,6 +78,7 @@ class Module4Paths:
 
 def parse_args() -> argparse.Namespace:
     """Parse CLI arguments."""
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-dir", type=Path, default=PROCESSED_DATA_DIR)
     parser.add_argument("--figure-dir", type=Path, default=FIGURES_DIR)
@@ -75,32 +86,35 @@ def parse_args() -> argparse.Namespace:
 
 
 def _range_ticks_from_width(entry_price: float, width_pct: float | None) -> tuple[int, int, float, float]:
-    """Return range ticks and actual aligned prices for a position width."""
+    """Convert a width definition from the PDF into aligned Uniswap ticks."""
+
     if width_pct is None:
         lower_tick = align_tick_to_spacing(UNISWAP_V3_MIN_TICK, tick_spacing=TICK_SPACING, mode="up")
         upper_tick = align_tick_to_spacing(UNISWAP_V3_MAX_TICK, tick_spacing=TICK_SPACING, mode="down")
     else:
-        target_low = entry_price * (1 - width_pct / 100)
-        target_high = entry_price * (1 + width_pct / 100)
-        tick_a = align_tick_to_spacing(price_usdc_per_weth_to_tick(target_low), tick_spacing=TICK_SPACING, mode="nearest")
-        tick_b = align_tick_to_spacing(price_usdc_per_weth_to_tick(target_high), tick_spacing=TICK_SPACING, mode="nearest")
+        target_price_low = entry_price * (1 - width_pct / 100)
+        target_price_high = entry_price * (1 + width_pct / 100)
+        tick_a = align_tick_to_spacing(price_usdc_per_weth_to_tick(target_price_low), tick_spacing=TICK_SPACING, mode="nearest")
+        tick_b = align_tick_to_spacing(price_usdc_per_weth_to_tick(target_price_high), tick_spacing=TICK_SPACING, mode="nearest")
         lower_tick = min(tick_a, tick_b)
         upper_tick = max(tick_a, tick_b)
-    price_low = float(min(tick_to_price_usdc_per_weth(lower_tick), tick_to_price_usdc_per_weth(upper_tick)))
-    price_high = float(max(tick_to_price_usdc_per_weth(lower_tick), tick_to_price_usdc_per_weth(upper_tick)))
-    return lower_tick, upper_tick, price_low, price_high
+
+    price_low, price_high = tick_interval_prices(lower_tick, upper_tick)
+    return lower_tick, upper_tick, float(price_low), float(price_high)
 
 
 def build_representative_positions(slot0_snapshots: pd.DataFrame) -> pd.DataFrame:
-    """Construct the five synthetic LP positions at the entry snapshot."""
-    entry_snapshot = slot0_snapshots.sort_values("snapshot_timestamp").iloc[0]
-    exit_snapshot = slot0_snapshots.sort_values("snapshot_timestamp").iloc[-1]
+    """Build the five synthetic LP positions required by the project brief."""
+
+    ordered_snapshots = slot0_snapshots.sort_values("snapshot_timestamp").reset_index(drop=True)
+    entry_snapshot = ordered_snapshots.iloc[0]
+    exit_snapshot = ordered_snapshots.iloc[-1]
     entry_price = float(entry_snapshot["price_usdc_per_weth"])
     rows: list[dict[str, object]] = []
 
     for definition in REPRESENTATIVE_POSITIONS:
         lower_tick, upper_tick, price_low, price_high = _range_ticks_from_width(entry_price, definition.width_pct)
-        liquidity_raw, usdc_amount, weth_amount = solve_liquidity_for_budget(
+        liquidity_raw, entry_usdc, entry_weth = solve_liquidity_for_budget(
             budget_usd=TARGET_POSITION_BUDGET,
             entry_price=entry_price,
             price_lower=price_low,
@@ -121,31 +135,47 @@ def build_representative_positions(slot0_snapshots: pd.DataFrame) -> pd.DataFram
                 "price_lower": price_low,
                 "price_upper": price_high,
                 "liquidity_raw": int(liquidity_raw),
-                "entry_usdc": float(usdc_amount),
-                "entry_weth": float(weth_amount),
+                "entry_usdc": float(entry_usdc),
+                "entry_weth": float(entry_weth),
                 "entry_budget_usd": TARGET_POSITION_BUDGET,
             }
         )
+
     return pd.DataFrame(rows)
 
 
 def compute_fee_accruals(positions: pd.DataFrame, swap_events: pd.DataFrame) -> pd.DataFrame:
-    """Compute per-swap fee income allocations for the synthetic positions."""
+    """Assign swap fees to each synthetic LP when the swap occurs inside its range.
+
+    We approximate fee share as:
+
+    `position liquidity / active pool liquidity at the swap tick`.
+
+    This is the cleanest simple rule for this project because swap-level fee
+    growth inside each tick range is not reconstructed separately.
+    """
+
     swaps = swap_events.sort_values(["block_timestamp", "block_number", "log_index"]).reset_index(drop=True)
     rows: list[dict[str, object]] = []
+
     for position in positions.itertuples(index=False):
         position_swaps = swaps[
             (swaps["block_timestamp"] >= position.entry_timestamp)
             & (swaps["block_timestamp"] <= position.exit_timestamp)
         ]
         for swap in position_swaps.itertuples(index=False):
+            # We use the swap tick itself, not just the post-swap price, because
+            # that is closer to the "was the position active during this swap?"
+            # question the PDF cares about.
             in_range = int(position.tick_lower) <= int(swap.tick) < int(position.tick_upper)
             if not in_range or float(swap.active_liquidity) <= 0:
                 continue
-            share = float(position.liquidity_raw) / float(swap.active_liquidity)
-            fee_token0 = max(float(swap.amount0_usdc), 0.0) * POOL_FEE_RATE * share
-            fee_token1 = max(float(swap.amount1_weth), 0.0) * POOL_FEE_RATE * share
-            fee_value_usd = fee_token0 + fee_token1 * float(swap.price_usdc_per_weth)
+
+            liquidity_share = float(position.liquidity_raw) / float(swap.active_liquidity)
+            fee_usdc = max(float(swap.amount0_usdc), 0.0) * POOL_FEE_RATE * liquidity_share
+            fee_weth = max(float(swap.amount1_weth), 0.0) * POOL_FEE_RATE * liquidity_share
+            fee_value_usd = fee_usdc + fee_weth * float(swap.price_usdc_per_weth)
+
             rows.append(
                 {
                     "position_id": position.position_id,
@@ -153,14 +183,16 @@ def compute_fee_accruals(positions: pd.DataFrame, swap_events: pd.DataFrame) -> 
                     "block_timestamp": swap.block_timestamp,
                     "trade_direction": swap.trade_direction,
                     "swap_price_usdc_per_weth": float(swap.price_usdc_per_weth),
-                    "fee_usdc": fee_token0,
-                    "fee_weth": fee_token1,
+                    "fee_usdc": fee_usdc,
+                    "fee_weth": fee_weth,
                     "fee_value_usd": fee_value_usd,
                 }
             )
+
     fee_flows = pd.DataFrame(rows)
     if fee_flows.empty:
         return fee_flows
+
     fee_flows = fee_flows.sort_values(["position_id", "block_timestamp"]).reset_index(drop=True)
     fee_flows["cumulative_fee_income_usd"] = fee_flows.groupby("position_id")["fee_value_usd"].cumsum()
     return fee_flows
@@ -171,7 +203,8 @@ def build_position_timeseries(
     slot0_snapshots: pd.DataFrame,
     fee_accruals: pd.DataFrame,
 ) -> pd.DataFrame:
-    """Compute daily LP value, HODL benchmark, IL, and fee-adjusted net P&L."""
+    """Mark LP value, HODL value, IL, and net P&L through time."""
+
     snapshots = slot0_snapshots.sort_values("snapshot_timestamp").reset_index(drop=True).copy()
     rows: list[dict[str, object]] = []
 
@@ -179,7 +212,7 @@ def build_position_timeseries(
         position_fee_flows = fee_accruals[fee_accruals["position_id"] == position.position_id].copy()
         for snapshot in snapshots.itertuples(index=False):
             price = float(snapshot.price_usdc_per_weth)
-            lp_principal = float(
+            lp_principal_usd = float(
                 synthetic_lp_value(
                     liquidity_raw=position.liquidity_raw,
                     price_usdc_per_weth=price,
@@ -187,13 +220,17 @@ def build_position_timeseries(
                     price_upper=position.price_upper,
                 )
             )
-            hodl_value = float(position.entry_usdc + position.entry_weth * price)
-            il_value = hodl_value - lp_principal
-            cumulative_fee_income = 0.0
+
+            # The HODL benchmark is simply "keep the entry token balances untouched".
+            hodl_value_usd = float(position.entry_usdc + position.entry_weth * price)
+            impermanent_loss_usd = hodl_value_usd - lp_principal_usd
+
+            cumulative_fee_income_usd = 0.0
             if not position_fee_flows.empty:
-                eligible = position_fee_flows[position_fee_flows["block_timestamp"] <= snapshot.snapshot_timestamp]
-                if not eligible.empty:
-                    cumulative_fee_income = float(eligible.iloc[-1]["cumulative_fee_income_usd"])
+                earned_so_far = position_fee_flows[position_fee_flows["block_timestamp"] <= snapshot.snapshot_timestamp]
+                if not earned_so_far.empty:
+                    cumulative_fee_income_usd = float(earned_so_far.iloc[-1]["cumulative_fee_income_usd"])
+
             rows.append(
                 {
                     "position_id": position.position_id,
@@ -201,18 +238,20 @@ def build_position_timeseries(
                     "snapshot_block": int(snapshot.snapshot_block),
                     "snapshot_timestamp": snapshot.snapshot_timestamp,
                     "price_usdc_per_weth": price,
-                    "lp_principal_usd": lp_principal,
-                    "hodl_value_usd": hodl_value,
-                    "impermanent_loss_usd": il_value,
-                    "cumulative_fee_income_usd": cumulative_fee_income,
-                    "net_pnl_usd": cumulative_fee_income - il_value,
+                    "lp_principal_usd": lp_principal_usd,
+                    "hodl_value_usd": hodl_value_usd,
+                    "impermanent_loss_usd": impermanent_loss_usd,
+                    "cumulative_fee_income_usd": cumulative_fee_income_usd,
+                    "net_pnl_usd": cumulative_fee_income_usd - impermanent_loss_usd,
                 }
             )
+
     return pd.DataFrame(rows)
 
 
 def plot_position_lines(timeseries: pd.DataFrame, value_column: str, title: str, y_label: str, path: Path) -> None:
-    """Plot one time series per representative LP position."""
+    """Plot one line per representative LP position."""
+
     set_project_style()
     fig, ax = plt.subplots(figsize=(12, 6))
     for position_id, frame in timeseries.groupby("position_id"):
@@ -225,7 +264,8 @@ def plot_position_lines(timeseries: pd.DataFrame, value_column: str, title: str,
 
 
 def run_module_4(data_dir: Path, figure_dir: Path) -> Module4Paths:
-    """Execute the full Module 4 analytics pipeline."""
+    """Execute the full Module 4 workflow."""
+
     paths = Module4Paths(data_dir=ensure_directory(data_dir), figure_dir=ensure_directory(figure_dir))
     slot0_snapshots = read_parquet(data_dir / "slot0_snapshots.parquet")
     swap_events = read_parquet(data_dir / "swap_events.parquet")
@@ -247,6 +287,7 @@ def run_module_4(data_dir: Path, figure_dir: Path) -> Module4Paths:
 
 def main() -> None:
     """CLI entry point."""
+
     args = parse_args()
     run_module_4(data_dir=args.data_dir, figure_dir=args.figure_dir)
 

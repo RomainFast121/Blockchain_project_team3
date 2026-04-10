@@ -1,4 +1,9 @@
-"""Project-wide constants and reproducible defaults."""
+"""Project-wide constants and reproducible defaults.
+
+Keeping the study parameters in one place makes the rest of the code easier to
+read because the module files can focus on the workflow rather than repeating the
+same literals.
+"""
 
 from __future__ import annotations
 
@@ -12,15 +17,19 @@ PROCESSED_DATA_DIR = PROJECT_ROOT / "data" / "processed"
 RAW_DATA_DIR = PROJECT_ROOT / "data" / "raw"
 FIGURES_DIR = PROJECT_ROOT / "figures"
 
+# The PDF uses this six-month window as the running example, so the project
+# adopts it as the default unless the user explicitly overrides it.
 DEFAULT_STUDY_START = date(2025, 10, 1)
 DEFAULT_STUDY_END = date(2026, 3, 31)
 
+# Pool under study: Uniswap V3 USDC/WETH 0.05%.
 POOL_DEPLOYMENT_BLOCK = 12_376_729
 POOL_ADDRESS = "0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640"
 POOL_FEE_RATE = 0.0005
 POOL_FEE_PIPS = 500
 TICK_SPACING = 10
 
+# Token order matters in Uniswap math.
 TOKEN0_SYMBOL = "USDC"
 TOKEN1_SYMBOL = "WETH"
 TOKEN0_DECIMALS = 6
@@ -35,7 +44,7 @@ DEFAULT_HYPERLIQUID_PAGE_HOURS = 4_800
 
 @dataclass(frozen=True)
 class PositionDefinition:
-    """Synthetic LP position definition used in Modules 4 and 5."""
+    """One synthetic LP profile requested in Modules 4 and 5."""
 
     name: str
     label: str
@@ -49,4 +58,3 @@ REPRESENTATIVE_POSITIONS = (
     PositionDefinition("P4", "Wide", 10.0),
     PositionDefinition("P5", "Full range", None),
 )
-

@@ -1,4 +1,13 @@
-"""Small Hyperliquid REST client for hourly candles and funding history."""
+"""Minimal Hyperliquid client used by Module 5.
+
+The project only needs two datasets from Hyperliquid:
+
+- hourly candles,
+- funding history.
+
+So this client intentionally stays small and focused rather than becoming a
+general-purpose API wrapper.
+"""
 
 from __future__ import annotations
 
@@ -14,7 +23,7 @@ PAGE_LIMIT = 500
 
 @dataclass
 class HyperliquidClient:
-    """Minimal client for the Hyperliquid info endpoint."""
+    """Small wrapper around the Hyperliquid info endpoint."""
 
     session: requests.Session | None = None
 
@@ -23,6 +32,8 @@ class HyperliquidClient:
             self.session = requests.Session()
 
     def _post(self, payload: dict) -> list[dict]:
+        """POST one request and require a list-like response payload."""
+
         response = self.session.post(HYPERLIQUID_INFO_URL, json=payload, timeout=30)
         response.raise_for_status()
         data = response.json()
@@ -31,9 +42,11 @@ class HyperliquidClient:
         raise ValueError(f"Unexpected Hyperliquid response payload: {data}")
 
     def fetch_hourly_candles(self, coin: str, start_time_ms: int, end_time_ms: int) -> pd.DataFrame:
-        """Fetch hourly OHLCV candles."""
+        """Fetch hourly OHLCV candles across the requested time window."""
+
         cursor = int(start_time_ms)
         rows: list[dict] = []
+
         while cursor <= end_time_ms:
             payload = {
                 "type": "candleSnapshot",
@@ -47,6 +60,7 @@ class HyperliquidClient:
             batch = self._post(payload)
             if not batch:
                 break
+
             rows.extend(batch)
             last_end_time = int(batch[-1]["T"])
             if last_end_time >= end_time_ms or len(batch) < PAGE_LIMIT:
@@ -56,6 +70,7 @@ class HyperliquidClient:
         frame = pd.DataFrame(rows)
         if frame.empty:
             return frame
+
         frame = frame.drop_duplicates(subset=["t", "T"]).sort_values("t").reset_index(drop=True)
         frame["timestamp"] = pd.to_datetime(frame["T"], unit="ms", utc=True)
         frame["open"] = frame["o"].astype(float)
@@ -66,9 +81,11 @@ class HyperliquidClient:
         return frame[["timestamp", "open", "high", "low", "close", "volume", "t", "T", "n", "s", "i"]]
 
     def fetch_funding_history(self, coin: str, start_time_ms: int, end_time_ms: int) -> pd.DataFrame:
-        """Fetch funding history and paginate across the study window."""
+        """Fetch funding history over the requested time window."""
+
         cursor = int(start_time_ms)
         rows: list[dict] = []
+
         while cursor <= end_time_ms:
             payload = {
                 "type": "fundingHistory",
@@ -79,6 +96,7 @@ class HyperliquidClient:
             batch = self._post(payload)
             if not batch:
                 break
+
             rows.extend(batch)
             last_time = int(batch[-1]["time"])
             if last_time >= end_time_ms or len(batch) < PAGE_LIMIT:
@@ -88,6 +106,7 @@ class HyperliquidClient:
         frame = pd.DataFrame(rows)
         if frame.empty:
             return frame
+
         frame = frame.drop_duplicates(subset=["time"]).sort_values("time").reset_index(drop=True)
         frame["timestamp"] = pd.to_datetime(frame["time"], unit="ms", utc=True)
         frame["funding_rate"] = frame["fundingRate"].astype(float)

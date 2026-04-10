@@ -92,6 +92,29 @@ class Module5BacktestTests(unittest.TestCase):
         self.assertIn("net_position_pnl_usd", results.columns)
         self.assertEqual(set(results["frequency"]), {"1h", "4h", "24h"})
 
+    def test_hourly_fee_series_forward_fills_cumulative_income(self) -> None:
+        hourly_market = pd.DataFrame(
+            [
+                {"timestamp": pd.Timestamp("2026-01-01 00:00:00", tz="UTC")},
+                {"timestamp": pd.Timestamp("2026-01-01 01:00:00", tz="UTC")},
+                {"timestamp": pd.Timestamp("2026-01-01 02:00:00", tz="UTC")},
+            ]
+        )
+        fees = build_hourly_fee_series(
+            self.positions,
+            pd.DataFrame(
+                [
+                    {
+                        "position_id": "P3",
+                        "block_timestamp": pd.Timestamp("2026-01-01 01:00:00", tz="UTC"),
+                        "cumulative_fee_income_usd": 50.0,
+                    }
+                ]
+            ),
+            hourly_market["timestamp"],
+        )
+        self.assertEqual(fees["lp_fee_income_usd"].tolist(), [0.0, 50.0, 50.0])
+
 
 if __name__ == "__main__":
     unittest.main()

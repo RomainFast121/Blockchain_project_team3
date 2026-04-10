@@ -114,6 +114,57 @@ class Module2AnalyticsTests(unittest.TestCase):
         self.assertEqual(expanded["tick"].tolist(), [-20, -10, 0, 10])
         self.assertEqual(expanded["active_liquidity"].tolist(), [100.0, 100.0, 100.0, 50.0])
 
+    def test_metric_output_contains_report_columns(self) -> None:
+        liquidity_snapshots = pd.DataFrame(
+            [
+                {
+                    "snapshot_block": 1,
+                    "snapshot_timestamp": pd.Timestamp("2026-01-01", tz="UTC"),
+                    "tick": -10,
+                    "liquidityNet": 100,
+                    "liquidityGross": 100,
+                    "active_liquidity": 100,
+                    "price_lower": 1_980.0,
+                    "price_upper": 2_000.0,
+                },
+                {
+                    "snapshot_block": 1,
+                    "snapshot_timestamp": pd.Timestamp("2026-01-01", tz="UTC"),
+                    "tick": 0,
+                    "liquidityNet": -100,
+                    "liquidityGross": 100,
+                    "active_liquidity": 0,
+                    "price_lower": 2_000.0,
+                    "price_upper": 2_020.0,
+                },
+            ]
+        )
+        slot0_snapshots = pd.DataFrame(
+            [
+                {
+                    "snapshot_block": 1,
+                    "snapshot_timestamp": pd.Timestamp("2026-01-01", tz="UTC"),
+                    "sqrtPriceX96": 0,
+                    "price_usdc_per_weth": 1_995.0,
+                    "current_tick": 0,
+                }
+            ]
+        )
+
+        metrics = compute_concentration_metrics(liquidity_snapshots, slot0_snapshots)
+        expected_columns = {
+            "snapshot_block",
+            "snapshot_timestamp",
+            "price_usdc_per_weth",
+            "l_hhi",
+            "ilr_0_1pct",
+            "ilr_0_5pct",
+            "ilr_1_0pct",
+            "ilr_2_0pct",
+            "ilr_5_0pct",
+        }
+        self.assertTrue(expected_columns.issubset(set(metrics.columns)))
+
 
 if __name__ == "__main__":
     unittest.main()

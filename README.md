@@ -2,23 +2,42 @@
 
 This repository implements the five required modules from the EPFL final project on the Uniswap V3 USDC/WETH 0.05% pool at `0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640`.
 
-The code is structured so that each module can be run independently once the upstream inputs exist, while common math and data-handling logic live in `common/`.
+The repository is written as a sequence of Python scripts rather than notebooks so it can be:
+
+- read from top to bottom like a report appendix,
+- rerun cleanly from the command line,
+- pushed to GitHub without hidden notebook state,
+- compared later with another team implementation.
+
+The intended reading order is the same as the PDF:
+
+1. Module 1 builds the on-chain datasets.
+2. Module 2 studies liquidity distribution.
+3. Module 3 studies execution costs and slippage.
+4. Module 4 studies LP fee income and impermanent loss.
+5. Module 5 studies delta hedging with Hyperliquid perps.
 
 ## Repository structure
 
-- `common/`: shared RPC helpers, Uniswap math, plotting utilities, and the Hyperliquid client.
-- `module1_onchain_data_extraction/`: raw event extraction, daily snapshot reconstruction, and Module 1 validation helpers.
-- `module2_liquidity_distribution_analysis/`: liquidity profiles, TVL decomposition, and concentration metrics.
-- `module3_slippage_simulation_and_execution_cost/`: standalone Uniswap V3 swap simulator and execution-cost analysis.
-- `module4_liquidity_provision_analytics/`: synthetic LP construction, fee income, impermanent loss, and net P&L.
-- `module5_dynamic_hedging_of_impermanent_loss/`: Hyperliquid data download and delta-hedging backtest.
-- `tests/`: deterministic unit tests covering the core math and module interfaces.
+- `common/`: shared protocol/math helpers, RPC utilities, plotting helpers, and the Hyperliquid client.
+- `module1_onchain_data_extraction/`: event download, daily snapshot reconstruction, and validation against on-chain state.
+- `module2_liquidity_distribution_analysis/`: liquidity profiles, TVL decomposition, ILR, and L-HHI.
+- `module3_slippage_simulation_and_execution_cost/`: the swap simulator plus the analysis/validation workflow.
+- `module4_liquidity_provision_analytics/`: synthetic LP construction, fee accrual, IL, and net P&L.
+- `module5_dynamic_hedging_of_impermanent_loss/`: market-data download and delta-hedging backtest.
+- `tests/`: deterministic tests for math, analytics logic, and CLI smoke checks.
 
 ## Environment
 
 Tested locally with Python `3.13.7`.
 
-Create and populate the local environment with:
+All commands below assume you are inside the project root:
+
+```bash
+cd /Users/romain/Documents/Epfl/MA2/Blockchain/project
+```
+
+Create and populate the environment with:
 
 ```bash
 python3 -m venv .venv
@@ -27,7 +46,8 @@ python3 -m venv .venv
 
 ## Execution order
 
-Run the modules in the following order from the repository root.
+Run the modules in the exact order below. Each module expects the outputs of the
+previous ones to already exist.
 
 1. Module 1
 
@@ -63,12 +83,32 @@ Run the modules in the following order from the repository root.
 
 Generated parquet files are written under `data/processed/` and generated figures under `figures/`.
 
+## Verification
+
+Run the test suite from the project root with explicit writable cache paths:
+
+```bash
+XDG_CACHE_HOME=.cache MPLCONFIGDIR=.cache/matplotlib .venv/bin/python -m unittest discover -s tests
+```
+
+Check the documented command-line entry points:
+
+```bash
+.venv/bin/python -m module1_onchain_data_extraction.data_extraction --help
+.venv/bin/python -m module2_liquidity_distribution_analysis.liquidity_analysis --help
+.venv/bin/python -m module3_slippage_simulation_and_execution_cost.slippage_analysis --help
+.venv/bin/python -m module4_liquidity_provision_analytics.lp_analytics --help
+.venv/bin/python -m module5_dynamic_hedging_of_impermanent_loss.hedge_backtest --help
+```
+
 ## Assumptions and explicit choices
 
 - The default study window is `2025-10-01` to `2026-03-31`, matching the example in the project brief. Module 1 exposes overrides, but the rest of the repository assumes those defaults unless upstream outputs are regenerated.
 - Module 1 saves `collect_events.parquet` as an auxiliary file because the brief explicitly recommends downloading Collect events during the historical scan used for Mint and Burn events.
-- Module 2 computes TVL decomposition from the active net liquidity per tick range aggregated by `(tick_lower, tick_upper)`. This is sufficient for valuation because Uniswap V3 token amount formulas are linear in liquidity.
+- Module 2 expands initialized ticks into tick-spacing intervals before computing liquidity profiles and concentration metrics. This is important because initialized ticks are only liquidity change points, not the full profile.
+- Module 2 computes TVL decomposition from active liquidity aggregated by `(tick_lower, tick_upper)`. This is sufficient for valuation because Uniswap V3 token amount formulas are linear in liquidity.
 - Module 3 validates observed swaps against pool state reconstructed at `block_number - 1`. This is exact at the block level, but not at the intra-block event-order level. That limitation should be mentioned in the report when discussing validation accuracy.
+- Module 4 assigns fees using the swap tick and the LP's share of active liquidity at that tick. This is a transparent approximation suitable for the project, but it is still a simplification of Uniswap's internal fee-growth bookkeeping.
 - Module 5 defines net position P&L as `LP fee income - residual IL`, where `residual IL = gross IL - net hedge P&L`. This avoids double-counting the hedge contribution.
 
 ## Output inventory

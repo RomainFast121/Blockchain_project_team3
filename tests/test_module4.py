@@ -83,6 +83,24 @@ class Module4LPAnalyticsTests(unittest.TestCase):
         timeseries = build_position_timeseries(positions, self.slot0_snapshots.iloc[[0]], fee_accruals)
         self.assertTrue((timeseries["impermanent_loss_usd"].abs() < 5).all())
 
+    def test_position_timeseries_contains_report_columns(self) -> None:
+        positions = build_representative_positions(self.slot0_snapshots)
+        fee_accruals = pd.DataFrame(columns=["position_id", "block_timestamp", "cumulative_fee_income_usd"])
+        timeseries = build_position_timeseries(positions, self.slot0_snapshots, fee_accruals)
+        expected_columns = {
+            "position_id",
+            "position_label",
+            "snapshot_block",
+            "snapshot_timestamp",
+            "price_usdc_per_weth",
+            "lp_principal_usd",
+            "hodl_value_usd",
+            "impermanent_loss_usd",
+            "cumulative_fee_income_usd",
+            "net_pnl_usd",
+        }
+        self.assertTrue(expected_columns.issubset(set(timeseries.columns)))
+
 
 if __name__ == "__main__":
     unittest.main()

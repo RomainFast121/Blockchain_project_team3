@@ -44,6 +44,10 @@ class Module3SwapSimulatorTests(unittest.TestCase):
         large_trade = simulate_exact_input_swap(self.state, direction="buy_weth", notional_usd=500_000)
         self.assertGreater(large_trade.price_impact_bps, small_trade.price_impact_bps)
 
+    def test_invalid_direction_raises_clear_error(self) -> None:
+        with self.assertRaises(ValueError):
+            simulate_exact_input_swap(self.state, direction="hold", notional_usd=10_000)
+
 
 if __name__ == "__main__":
     unittest.main()
