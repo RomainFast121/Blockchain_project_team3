@@ -19,6 +19,8 @@ import requests
 
 HYPERLIQUID_INFO_URL = "https://api.hyperliquid.xyz/info"
 PAGE_LIMIT = 500
+PERP_PRICE_COLUMNS = ["timestamp", "open", "high", "low", "close", "volume", "t", "T", "n", "s", "i"]
+FUNDING_HISTORY_COLUMNS = ["timestamp", "coin", "funding_rate", "premium", "time"]
 
 
 @dataclass
@@ -69,7 +71,7 @@ class HyperliquidClient:
 
         frame = pd.DataFrame(rows)
         if frame.empty:
-            return frame
+            return pd.DataFrame(columns=PERP_PRICE_COLUMNS)
 
         frame = frame.drop_duplicates(subset=["t", "T"]).sort_values("t").reset_index(drop=True)
         frame["timestamp"] = pd.to_datetime(frame["T"], unit="ms", utc=True)
@@ -78,7 +80,7 @@ class HyperliquidClient:
         frame["low"] = frame["l"].astype(float)
         frame["close"] = frame["c"].astype(float)
         frame["volume"] = frame["v"].astype(float)
-        return frame[["timestamp", "open", "high", "low", "close", "volume", "t", "T", "n", "s", "i"]]
+        return frame[PERP_PRICE_COLUMNS]
 
     def fetch_funding_history(self, coin: str, start_time_ms: int, end_time_ms: int) -> pd.DataFrame:
         """Fetch funding history over the requested time window."""
@@ -105,10 +107,10 @@ class HyperliquidClient:
 
         frame = pd.DataFrame(rows)
         if frame.empty:
-            return frame
+            return pd.DataFrame(columns=FUNDING_HISTORY_COLUMNS)
 
         frame = frame.drop_duplicates(subset=["time"]).sort_values("time").reset_index(drop=True)
         frame["timestamp"] = pd.to_datetime(frame["time"], unit="ms", utc=True)
         frame["funding_rate"] = frame["fundingRate"].astype(float)
         frame["premium"] = pd.to_numeric(frame["premium"], errors="coerce")
-        return frame[["timestamp", "coin", "funding_rate", "premium", "time"]]
+        return frame[FUNDING_HISTORY_COLUMNS]

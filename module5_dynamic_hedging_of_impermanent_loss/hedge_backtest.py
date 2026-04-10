@@ -22,7 +22,7 @@ import numpy as np
 import pandas as pd
 
 from common.constants import FIGURES_DIR, PROCESSED_DATA_DIR
-from common.hyperliquid_client import HyperliquidClient
+from common.hyperliquid_client import FUNDING_HISTORY_COLUMNS, PERP_PRICE_COLUMNS, HyperliquidClient
 from common.io_utils import ensure_directory, read_parquet, write_parquet
 from common.plotting import save_figure, set_project_style
 from common.uniswap_math import synthetic_lp_delta, synthetic_lp_value
@@ -30,6 +30,38 @@ from common.uniswap_math import synthetic_lp_delta, synthetic_lp_value
 
 TRADING_FEE_RATE = 0.00045
 REBALANCE_FREQUENCIES = {"1h": 1, "4h": 4, "24h": 24}
+HOURLY_MARKET_COLUMNS = [
+    "timestamp",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "t",
+    "T",
+    "n",
+    "s",
+    "i",
+    "funding_rate",
+    "cumulative_funding_rate",
+]
+HEDGE_RESULTS_COLUMNS = [
+    "position_id",
+    "frequency",
+    "timestamp",
+    "price_usdc_per_weth",
+    "lp_principal_usd",
+    "hodl_value_usd",
+    "gross_il_usd",
+    "hedge_size_eth",
+    "hedge_pnl_usd",
+    "funding_pnl_usd",
+    "trading_fees_usd",
+    "net_hedge_pnl_usd",
+    "residual_il_usd",
+    "lp_fee_income_usd",
+    "net_position_pnl_usd",
+]
 
 
 @dataclass(frozen=True)
@@ -100,18 +132,27 @@ def fetch_hyperliquid_data(positions: pd.DataFrame, coin: str) -> tuple[pd.DataF
 def prepare_hourly_market_data(perp_prices: pd.DataFrame, funding_rates: pd.DataFrame) -> pd.DataFrame:
     """Merge hourly closes and hourly funding into one clean market table."""
 
-    prices = perp_prices.copy().sort_values("timestamp").reset_index(drop=True)
-    funding = funding_rates.copy().sort_values("timestamp").reset_index(drop=True)
+    prices = perp_prices.copy()
+    if prices.empty:
+        return pd.DataFrame(columns=HOURLY_MARKET_COLUMNS)
+    prices = prices.sort_values("timestamp").reset_index(drop=True)
+
+    funding = funding_rates.copy()
+    if funding.empty or "timestamp" not in funding.columns:
+        prices["funding_rate"] = 0.0
+        prices["cumulative_funding_rate"] = 0.0
+        return prices.reindex(columns=HOURLY_MARKET_COLUMNS)
+    funding = funding.sort_values("timestamp").reset_index(drop=True)
 
     if funding.empty:
         prices["funding_rate"] = 0.0
         prices["cumulative_funding_rate"] = 0.0
-        return prices
+        return prices.reindex(columns=HOURLY_MARKET_COLUMNS)
 
     merged = prices.merge(funding[["timestamp", "funding_rate"]], on="timestamp", how="left")
     merged["funding_rate"] = merged["funding_rate"].fillna(0.0)
     merged["cumulative_funding_rate"] = merged["funding_rate"].cumsum()
-    return merged
+    return merged.reindex(columns=HOURLY_MARKET_COLUMNS)
 
 
 def build_hourly_fee_series(positions: pd.DataFrame, fee_accruals: pd.DataFrame, hourly_timestamps: pd.Series) -> pd.DataFrame:
@@ -241,7 +282,18 @@ def run_delta_hedge_backtest(
                     }
                 )
 
-    return pd.DataFrame(results)
+    return pd.DataFrame(results, columns=HEDGE_RESULTS_COLUMNS)
+
+
+def _draw_empty_axis(axis: plt.Axes, title: str, message: str, xlabel: str = "", ylabel: str = "") -> None:
+    """Render a compact placeholder when a smoke test has no usable rows."""
+
+    axis.set_title(title)
+    axis.set_xlabel(xlabel)
+    axis.set_ylabel(ylabel)
+    axis.text(0.5, 0.5, message, ha="center", va="center", transform=axis.transAxes, fontsize=10)
+    axis.set_xticks([])
+    axis.set_yticks([])
 
 
 def plot_lp_payoffs(positions: pd.DataFrame, path: Path) -> None:
@@ -279,6 +331,12 @@ def plot_funding_environment(hourly_market: pd.DataFrame, path: Path) -> None:
     set_project_style()
     fig, axes = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
 
+    if hourly_market.empty:
+        _draw_empty_axis(axes[0], "Funding environment", "No hourly perp prices returned for this window.", ylabel="USDC per WETH")
+        _draw_empty_axis(axes[1], "Funding environment", "No hourly funding history returned for this window.", xlabel="Timestamp", ylabel="Funding rate")
+        save_figure(fig, path)
+        return
+
     axes[0].plot(hourly_market["timestamp"], hourly_market["price_usdc_per_weth"], color="black", linewidth=1.6, label="ETH perp close")
     axes[0].set_ylabel("USDC per WETH")
     axes[0].legend(loc="upper left")
@@ -295,6 +353,12 @@ def plot_hedging_results(hedge_results: pd.DataFrame, path: Path) -> None:
     """Render heatmaps of final residual IL and final net P&L."""
 
     set_project_style()
+    if hedge_results.empty:
+        fig, ax = plt.subplots(figsize=(10, 5))
+        _draw_empty_axis(ax, "Hedging results", "No hedge paths were generated for this smoke-test window.")
+        save_figure(fig, path)
+        return
+
     final_rows = hedge_results.sort_values("timestamp").groupby(["position_id", "frequency"], as_index=False).tail(1)
     residual_matrix = final_rows.pivot(index="position_id", columns="frequency", values="residual_il_usd")
     pnl_matrix = final_rows.pivot(index="position_id", columns="frequency", values="net_position_pnl_usd")
