@@ -22,6 +22,7 @@ from module1_onchain_data_extraction.data_extraction import (
     _decode_collect_events,
     _decode_liquidity_events,
     _decode_swap_events,
+    _validation_summary,
     apply_smoke_test_window,
     build_liquidity_snapshots,
     resolve_study_window_blocks,
@@ -286,6 +287,31 @@ class Module1DecoderTests(unittest.TestCase):
         )
         self.assertListEqual(frame.columns.tolist(), COLLECT_EVENT_COLUMNS)
         self.assertTrue(frame.empty)
+
+    def test_validation_summary_records_failed_status_without_crashing(self) -> None:
+        swap_events = pd.DataFrame(
+            [
+                {
+                    "block_number": 100,
+                    "amount0_usdc": 12.5,
+                    "amount1_weth": -0.005,
+                    "notional_usd": 12.5,
+                }
+            ]
+        )
+        summary = _validation_summary(
+            slot0_consistency=None,
+            liquidity_validation=None,
+            swap_events=swap_events,
+            study_start=pd.Timestamp("2026-01-01").date(),
+            study_end=pd.Timestamp("2026-01-02").date(),
+            validation_status="failed",
+            error_type="HTTPError",
+            error_message="rate limited",
+        )
+        self.assertEqual(summary["validation_status"], "failed")
+        self.assertEqual(summary["error_type"], "HTTPError")
+        self.assertEqual(summary["volume_cross_check"]["swap_count"], 1)
 
 
 if __name__ == "__main__":

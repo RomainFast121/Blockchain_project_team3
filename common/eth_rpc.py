@@ -17,7 +17,7 @@ from time import sleep
 from typing import Any, Iterable
 
 import pandas as pd
-from requests import HTTPError
+from requests import HTTPError, RequestException
 from eth_utils import event_abi_to_log_topic
 from web3 import Web3
 from web3._utils.events import get_event_data
@@ -70,8 +70,23 @@ class EthereumArchiveClient:
         """Return a UTC block timestamp, using a local cache when possible."""
 
         if block_number not in self._timestamp_cache:
-            block = self.web3.eth.get_block(int(block_number))
-            self._timestamp_cache[block_number] = datetime.fromtimestamp(int(block["timestamp"]), tz=UTC)
+            attempt = 0
+            while True:
+                if self.request_spacing_seconds > 0:
+                    sleep(self.request_spacing_seconds)
+                try:
+                    block = self.web3.eth.get_block(int(block_number))
+                    self._timestamp_cache[block_number] = datetime.fromtimestamp(int(block["timestamp"]), tz=UTC)
+                    break
+                except (RequestException, HTTPError, ValueError):
+                    if attempt >= self.retry_attempts:
+                        raise
+                except Exception:
+                    if attempt >= self.retry_attempts:
+                        raise
+
+                sleep(self.retry_base_delay_seconds * (2**attempt))
+                attempt += 1
         return self._timestamp_cache[block_number]
 
     def get_logs(self, event_name: str, from_block: int, to_block: int) -> list[dict[str, Any]]:
@@ -224,16 +239,43 @@ class EthereumArchiveClient:
         after_distance = abs(int(self.get_block_timestamp(at_or_after).timestamp()) - target)
         return before if before_distance <= after_distance else at_or_after
 
-    def block_timestamps_frame(self, block_numbers: Iterable[int]) -> pd.DataFrame:
+    def block_timestamps_frame(
+        self,
+        block_numbers: Iterable[int],
+        *,
+        stage_label: str = "timestamps",
+        progress_seconds: float = 30.0,
+    ) -> pd.DataFrame:
         """Return a merge-ready DataFrame of block numbers and timestamps."""
 
-        rows = [
-            {
-                "block_number": int(block_number),
-                "block_timestamp": self.get_block_timestamp(int(block_number)),
-            }
-            for block_number in sorted({int(value) for value in block_numbers})
-        ]
+        unique_blocks = sorted({int(value) for value in block_numbers})
+        if not unique_blocks:
+            return pd.DataFrame(columns=["block_number", "block_timestamp"])
+
+        print(f"[{stage_label}] starting {len(unique_blocks):,} unique blocks", flush=True)
+        started_at = datetime.now(tz=UTC).timestamp()
+        last_report_at = started_at
+        rows = []
+        total_blocks = len(unique_blocks)
+        for index, block_number in enumerate(unique_blocks, start=1):
+            rows.append(
+                {
+                    "block_number": int(block_number),
+                    "block_timestamp": self.get_block_timestamp(int(block_number)),
+                }
+            )
+            now = datetime.now(tz=UTC).timestamp()
+            if progress_seconds > 0 and (index == total_blocks or now - last_report_at >= progress_seconds):
+                print(
+                    f"[{stage_label}] {index:,}/{total_blocks:,} blocks elapsed={int(now - started_at)}s",
+                    flush=True,
+                )
+                last_report_at = now
+
+        print(
+            f"[{stage_label}] done rows={len(rows):,} elapsed={int(datetime.now(tz=UTC).timestamp() - started_at)}s",
+            flush=True,
+        )
         return pd.DataFrame(rows)
 
     def call_slot0(self, block_number: int) -> dict[str, Any]:

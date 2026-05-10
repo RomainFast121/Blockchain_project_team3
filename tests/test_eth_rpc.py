@@ -6,7 +6,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from requests import HTTPError
+from requests import HTTPError, RequestException
 
 from common.eth_rpc import EthereumArchiveClient
 
@@ -59,6 +59,34 @@ class EthereumRpcClientAutoSplitTests(unittest.TestCase):
             logs = client._get_logs_with_retry({"fromBlock": 1, "toBlock": 1})
 
         self.assertEqual(len(logs), 1)
+
+    def test_get_block_timestamp_retries_then_caches(self) -> None:
+        client = object.__new__(EthereumArchiveClient)
+        client._timestamp_cache = {}
+        client.request_spacing_seconds = 0.0
+        client.retry_attempts = 2
+        client.retry_base_delay_seconds = 0.0
+
+        responses = [
+            RequestException("temporary outage"),
+            {"timestamp": 1_700_000_000},
+        ]
+
+        class DummyEth:
+            def get_block(self, block_number):  # noqa: ANN001
+                response = responses.pop(0)
+                if isinstance(response, Exception):
+                    raise response
+                return response
+
+        client.web3 = SimpleNamespace(eth=DummyEth())
+
+        with patch("common.eth_rpc.sleep"):
+            timestamp = client.get_block_timestamp(123)
+            cached_timestamp = client.get_block_timestamp(123)
+
+        self.assertEqual(timestamp, cached_timestamp)
+        self.assertEqual(len(responses), 0)
 
 
 if __name__ == "__main__":

@@ -58,6 +58,13 @@ python -m module1_onchain_data_extraction.data_extraction \
 
 `--log-chunk-size 2000` is appropriate only for a paid or otherwise capable archive RPC tier. If the provider rejects large ranges or rate-limits requests, reduce the chunk size. The free-tier-safe setting used for smoke runs is `10`.
 
+If the parquet outputs are the priority and you want Module 1 to skip the two
+validation checks at the end, add:
+
+```bash
+  --skip-validation
+```
+
 ### Downstream modules
 
 After Module 1, run the remaining modules in order. Each module expects the outputs of the previous modules to exist under `data/processed/`.
@@ -400,4 +407,3 @@ python -m module5_dynamic_hedging_of_impermanent_loss.hedge_backtest --help
 | `residual_il_usd` | float | USD | `gross_il_usd - net_hedge_pnl_usd`. |
 | `lp_fee_income_usd` | float | USD | Cumulative LP fee income mapped to the hourly grid. |
 | `net_position_pnl_usd` | float | USD | `lp_fee_income_usd - residual_il_usd`. |
-

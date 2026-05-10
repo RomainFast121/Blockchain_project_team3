@@ -191,6 +191,11 @@ def parse_args() -> argparse.Namespace:
             "Set to 0 to disable periodic progress messages."
         ),
     )
+    parser.add_argument(
+        "--skip-validation",
+        action="store_true",
+        help="Skip the slot0 and tick-state validation checks while still writing all parquet outputs.",
+    )
     return parser.parse_args()
 
 
@@ -241,13 +246,19 @@ def _attach_block_timestamps(
     frame: pd.DataFrame,
     *,
     timestamp_column: str = "block_timestamp",
+    stage_label: str = "timestamps",
+    progress_seconds: float = 30.0,
 ) -> pd.DataFrame:
     """Attach UTC block timestamps to a decoded event table."""
 
     if frame.empty:
         return frame
 
-    timestamps = _block_timestamps(client, frame["block_number"].tolist())
+    timestamps = client.block_timestamps_frame(
+        frame["block_number"].tolist(),
+        stage_label=stage_label,
+        progress_seconds=progress_seconds,
+    )
     merged = frame.merge(timestamps, on="block_number", how="left")
     merged[timestamp_column] = pd.to_datetime(merged[timestamp_column], utc=True)
     return merged
@@ -312,7 +323,7 @@ def _decode_swap_events(
     """Decode raw Swap logs into the clean table used throughout the project."""
 
     rows: list[dict[str, object]] = []
-    tracker = ProgressTracker("Swap", start_block, end_block, progress_seconds)
+    tracker = ProgressTracker("Swap logs", start_block, end_block, progress_seconds)
     for event in client.iter_event_logs("Swap", start_block, end_block, chunk_size):
         args = event["args"]
         amount0_raw = int(args["amount0"])
@@ -351,7 +362,12 @@ def _decode_swap_events(
         return pd.DataFrame(columns=SWAP_EVENT_COLUMNS)
 
     swaps = pd.DataFrame(rows).sort_values(["block_number", "log_index"]).reset_index(drop=True)
-    swaps = _attach_block_timestamps(client, swaps)
+    swaps = _attach_block_timestamps(
+        client,
+        swaps,
+        stage_label="Swap timestamps",
+        progress_seconds=progress_seconds,
+    )
     if swaps.empty:
         return pd.DataFrame(columns=SWAP_EVENT_COLUMNS)
 
@@ -369,7 +385,7 @@ def _decode_liquidity_events(
     """Decode Mint or Burn logs into one uniform liquidity-event table."""
 
     rows: list[dict[str, object]] = []
-    tracker = ProgressTracker(event_name, start_block, end_block, progress_seconds)
+    tracker = ProgressTracker(f"{event_name} logs", start_block, end_block, progress_seconds)
     for event in client.iter_event_logs(event_name, start_block, end_block, chunk_size):
         args = event["args"]
         amount0_raw = int(args["amount0"])
@@ -399,7 +415,12 @@ def _decode_liquidity_events(
         return pd.DataFrame(columns=LIQUIDITY_EVENT_COLUMNS)
 
     frame = pd.DataFrame(rows).sort_values(["block_number", "log_index"]).reset_index(drop=True)
-    frame = _attach_block_timestamps(client, frame)
+    frame = _attach_block_timestamps(
+        client,
+        frame,
+        stage_label=f"{event_name} timestamps",
+        progress_seconds=progress_seconds,
+    )
     return frame[LIQUIDITY_EVENT_COLUMNS]
 
 
@@ -417,7 +438,7 @@ def _decode_collect_events(
     """
 
     rows: list[dict[str, object]] = []
-    tracker = ProgressTracker("Collect", start_block, end_block, progress_seconds)
+    tracker = ProgressTracker("Collect logs", start_block, end_block, progress_seconds)
     for event in client.iter_event_logs("Collect", start_block, end_block, chunk_size):
         args = event["args"]
         amount0_raw = int(args["amount0"])
@@ -446,7 +467,12 @@ def _decode_collect_events(
         return pd.DataFrame(columns=COLLECT_EVENT_COLUMNS)
 
     frame = pd.DataFrame(rows).sort_values(["block_number", "log_index"]).reset_index(drop=True)
-    frame = _attach_block_timestamps(client, frame)
+    frame = _attach_block_timestamps(
+        client,
+        frame,
+        stage_label="Collect timestamps",
+        progress_seconds=progress_seconds,
+    )
     return frame[COLLECT_EVENT_COLUMNS]
 
 
@@ -699,11 +725,15 @@ def validate_snapshot_against_rpc(
 
 
 def _validation_summary(
-    slot0_consistency: pd.DataFrame,
-    liquidity_validation: pd.DataFrame,
+    slot0_consistency: pd.DataFrame | None,
+    liquidity_validation: pd.DataFrame | None,
     swap_events: pd.DataFrame,
     study_start: date,
     study_end: date,
+    *,
+    validation_status: str,
+    error_type: str | None = None,
+    error_message: str | None = None,
 ) -> dict[str, object]:
     """Build the JSON summary saved alongside the parquet outputs."""
 
@@ -712,6 +742,9 @@ def _validation_summary(
     total_notional_usd = float(swap_events["notional_usd"].sum()) if not swap_events.empty else 0.0
     return {
         "assumption": "The default study window follows the example given in the project brief: 2025-10-01 to 2026-03-31.",
+        "validation_status": validation_status,
+        "error_type": error_type,
+        "error_message": error_message,
         "volume_cross_check": {
             "study_start": study_start.isoformat(),
             "study_end": study_end.isoformat(),
@@ -723,13 +756,25 @@ def _validation_summary(
             "total_notional_usd": total_notional_usd,
         },
         "slot0_consistency_summary": {
-            "rows_checked": int(len(slot0_consistency)),
-            "all_within_tick_spacing": bool(slot0_consistency["within_tick_spacing"].all()) if not slot0_consistency.empty else None,
-            "max_tick_distance": int(slot0_consistency["tick_distance"].max()) if not slot0_consistency.empty else None,
+            "rows_checked": int(len(slot0_consistency)) if slot0_consistency is not None else 0,
+            "all_within_tick_spacing": (
+                bool(slot0_consistency["within_tick_spacing"].all())
+                if slot0_consistency is not None and not slot0_consistency.empty
+                else None
+            ),
+            "max_tick_distance": (
+                int(slot0_consistency["tick_distance"].max())
+                if slot0_consistency is not None and not slot0_consistency.empty
+                else None
+            ),
         },
         "liquidity_validation_summary": {
-            "rows_checked": int(len(liquidity_validation)),
-            "all_exact_matches": bool(liquidity_validation["matches"].all()) if not liquidity_validation.empty else None,
+            "rows_checked": int(len(liquidity_validation)) if liquidity_validation is not None else 0,
+            "all_exact_matches": (
+                bool(liquidity_validation["matches"].all())
+                if liquidity_validation is not None and not liquidity_validation.empty
+                else None
+            ),
         },
     }
 
@@ -748,6 +793,7 @@ def run_module_1(
     validation_seed: int,
     progress_seconds: float,
     smoke_test_days: int | None = None,
+    skip_validation: bool = False,
 ) -> Module1Paths:
     """Execute the full Module 1 workflow."""
 
@@ -781,6 +827,7 @@ def run_module_1(
         chunk_size=log_chunk_size,
         progress_seconds=progress_seconds,
     )
+    write_parquet(swap_events, paths.swap_events)
     mint_events = _decode_liquidity_events(
         client,
         event_name="Mint",
@@ -807,26 +854,45 @@ def run_module_1(
 
     mint_burn_events = pd.concat([mint_events, burn_events], ignore_index=True)
     mint_burn_events = mint_burn_events.sort_values(["block_number", "log_index"]).reset_index(drop=True)
+    write_parquet(mint_burn_events, paths.mint_burn_events)
+    write_parquet(collect_events, paths.collect_events)
 
     # Step 3. Rebuild one daily snapshot schedule and use it to reconstruct both
     # the liquidity map and the on-chain slot0 state.
     snapshot_blocks = _build_snapshot_schedule(client, study_start=study_start, study_end=study_end)
     print(f"[Module1] building {len(snapshot_blocks):,} daily liquidity snapshots", flush=True)
     liquidity_snapshots = build_liquidity_snapshots(mint_burn_events, snapshot_blocks)
+    write_parquet(liquidity_snapshots, paths.liquidity_snapshots)
     print(f"[Module1] fetching {len(snapshot_blocks):,} slot0 snapshots", flush=True)
     slot0_snapshots = build_slot0_snapshots(client, snapshot_blocks)
+    write_parquet(slot0_snapshots, paths.slot0_snapshots)
 
     # Step 4. Run the two validation checks requested in spirit by the PDF:
     # compare tick states to `ticks()` and compare snapshot slot0 to the last swap.
-    slot0_consistency = compare_slot0_to_last_swap(slot0_snapshots=slot0_snapshots, swap_events=swap_events)
-    liquidity_validation = validate_snapshot_against_rpc(client=client, liquidity_snapshots=liquidity_snapshots, seed=validation_seed)
+    slot0_consistency: pd.DataFrame | None
+    liquidity_validation: pd.DataFrame | None
+    validation_status = "passed"
+    error_type = None
+    error_message = None
+    if skip_validation:
+        slot0_consistency = None
+        liquidity_validation = None
+        validation_status = "skipped"
+    else:
+        try:
+            slot0_consistency = compare_slot0_to_last_swap(slot0_snapshots=slot0_snapshots, swap_events=swap_events)
+            liquidity_validation = validate_snapshot_against_rpc(
+                client=client,
+                liquidity_snapshots=liquidity_snapshots,
+                seed=validation_seed,
+            )
+        except Exception as exc:  # noqa: BLE001
+            slot0_consistency = None
+            liquidity_validation = None
+            validation_status = "failed"
+            error_type = type(exc).__name__
+            error_message = str(exc)
 
-    # Step 5. Save clean parquet outputs for downstream modules.
-    write_parquet(swap_events, paths.swap_events)
-    write_parquet(mint_burn_events, paths.mint_burn_events)
-    write_parquet(collect_events, paths.collect_events)
-    write_parquet(liquidity_snapshots, paths.liquidity_snapshots)
-    write_parquet(slot0_snapshots, paths.slot0_snapshots)
     paths.validations.write_text(
         json.dumps(
             _validation_summary(
@@ -835,6 +901,9 @@ def run_module_1(
                 swap_events=swap_events,
                 study_start=study_start,
                 study_end=study_end,
+                validation_status=validation_status,
+                error_type=error_type,
+                error_message=error_message,
             ),
             indent=2,
         )
@@ -859,6 +928,7 @@ def main() -> None:
         validation_seed=args.validation_seed,
         progress_seconds=max(0.0, args.progress_seconds),
         smoke_test_days=args.smoke_test_days,
+        skip_validation=args.skip_validation,
     )
 
 
