@@ -27,104 +27,87 @@ The intended reading order is the same as the PDF:
 - `module5_dynamic_hedging_of_impermanent_loss/`: market-data download and delta-hedging backtest.
 - `tests/`: deterministic tests for math, analytics logic, and CLI smoke checks.
 
-## Environment
+## Execution
 
-Tested locally with Python `3.13.7`.
+Run commands from the repository root. The repository assumes a Python environment with the dependencies in `requirements.txt` already available.
 
-Create and populate a local environment from the repository root with:
+Module 1 is the only stage that performs the heavy Ethereum archive-node extraction. Two execution modes are supported.
+
+### Option A — smoke run
+
+This is the recommended reproducibility path when RPC usage limits prevent a full deployment-to-window replay. It validates the direct-RPC pipeline, output schemas, downstream joins, figures, and end-to-end execution.
 
 ```bash
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
+python -m module1_onchain_data_extraction.data_extraction \
+  --rpc-url "YOUR_ARCHIVE_RPC_URL" \
+  --smoke-test-days 1 \
+  --log-chunk-size 10
 ```
 
-## Execution order
+For free-tier RPC providers, keep `--log-chunk-size 10` or another conservative value. In smoke mode, Module 1 deliberately limits Mint/Burn/Collect history to the smoke window, so the resulting liquidity state is an execution-path validation rather than a full historical reconstruction.
 
-Run the modules in the exact order below from the repository root. Each module
-expects the outputs of the previous ones to already exist.
+### Option B — full PDF-aligned historical run
 
-1. Module 1
+This mode reconstructs liquidity from the pool deployment block and is the academically complete version. It requires an archive RPC plan that can sustain a large historical `eth_getLogs` workload.
 
 ```bash
-.venv/bin/python -m module1_onchain_data_extraction.data_extraction \
+python -m module1_onchain_data_extraction.data_extraction \
+  --rpc-url "YOUR_ARCHIVE_RPC_URL" \
+  --log-chunk-size 2000
+```
+
+`--log-chunk-size 2000` is appropriate only for a paid or otherwise capable archive RPC tier. If the provider rejects large ranges or rate-limits requests, reduce the chunk size. The free-tier-safe setting used for smoke runs is `10`.
+
+### Downstream modules
+
+After Module 1, run the remaining modules in order. Each module expects the outputs of the previous modules to exist under `data/processed/`.
+
+```bash
+python -m module2_liquidity_distribution_analysis.liquidity_analysis
+```
+
+```bash
+python -m module3_slippage_simulation_and_execution_cost.slippage_analysis \
   --rpc-url "YOUR_ARCHIVE_RPC_URL"
 ```
 
-The default `eth_getLogs` chunk size is set to a free-tier friendly value. If
-you are using Alchemy free tier, do not increase it above `10`.
-
-If you want to confirm that the live RPC pipeline works before attempting the
-full six-month extraction, run a tiny smoke-test window first:
-
 ```bash
-.venv/bin/python -m module1_onchain_data_extraction.data_extraction \
-  --rpc-url "YOUR_ARCHIVE_RPC_URL" \
-  --smoke-test-days 1
+python -m module4_liquidity_provision_analytics.lp_analytics
 ```
 
-In smoke-test mode, Module 1 also limits Mint/Burn/Collect history to the same
-small window. This keeps the check practical on free-tier providers. The full
-PDF-aligned run still uses pool-deployment history for liquidity reconstruction.
+```bash
+python -m module5_dynamic_hedging_of_impermanent_loss.hedge_backtest
+```
 
-### Smoke mode versus full-history reconstruction
+Generated parquet files are written under `data/processed/`; generated figures are written under `figures/`.
 
-The teaching staff explicitly allowed smoke-mode execution for this repository
-because RPC usage limits make full historical replay impractical on some free
-tiers. Smoke mode is therefore used as an honest validation of:
+## Smoke mode versus full-history reconstruction
+
+The teaching staff explicitly allowed smoke-mode execution for this repository because RPC usage limits make full historical replay impractical on some free tiers. Smoke mode is therefore used as an honest validation of:
 
 - the direct-RPC extraction path,
 - table schemas and downstream joins,
 - plotting code,
 - and end-to-end module integration.
 
-Smoke mode does **not** reconstruct the full deployment-to-window liquidity
-history because it intentionally truncates Mint/Burn/Collect to the selected
-window. A fully PDF-aligned liquidity replay still requires Mint/Burn/Collect
-from the pool deployment block `12,376,729` through the study end date.
-
-2. Module 2
-
-```bash
-.venv/bin/python -m module2_liquidity_distribution_analysis.liquidity_analysis
-```
-
-3. Module 3
-
-```bash
-.venv/bin/python -m module3_slippage_simulation_and_execution_cost.slippage_analysis \
-  --rpc-url "YOUR_ARCHIVE_RPC_URL"
-```
-
-4. Module 4
-
-```bash
-.venv/bin/python -m module4_liquidity_provision_analytics.lp_analytics
-```
-
-5. Module 5
-
-```bash
-.venv/bin/python -m module5_dynamic_hedging_of_impermanent_loss.hedge_backtest
-```
-
-Generated parquet files are written under `data/processed/` and generated figures under `figures/`.
+Smoke mode does **not** reconstruct the full deployment-to-window liquidity history because it intentionally truncates Mint/Burn/Collect to the selected window. A fully PDF-aligned liquidity replay still requires Mint/Burn/Collect from the pool deployment block `12,376,729` through the study end date.
 
 ## Verification
 
-Run the test suite from the repository root with explicit writable cache paths:
+Run the deterministic test suite from the repository root:
 
 ```bash
-XDG_CACHE_HOME=.cache MPLCONFIGDIR=.cache/matplotlib .venv/bin/python -m unittest discover -s tests
+XDG_CACHE_HOME=.cache MPLCONFIGDIR=.cache/matplotlib python -m unittest discover -s tests
 ```
 
 Check the documented command-line entry points:
 
 ```bash
-.venv/bin/python -m module1_onchain_data_extraction.data_extraction --help
-.venv/bin/python -m module2_liquidity_distribution_analysis.liquidity_analysis --help
-.venv/bin/python -m module3_slippage_simulation_and_execution_cost.slippage_analysis --help
-.venv/bin/python -m module4_liquidity_provision_analytics.lp_analytics --help
-.venv/bin/python -m module5_dynamic_hedging_of_impermanent_loss.hedge_backtest --help
+python -m module1_onchain_data_extraction.data_extraction --help
+python -m module2_liquidity_distribution_analysis.liquidity_analysis --help
+python -m module3_slippage_simulation_and_execution_cost.slippage_analysis --help
+python -m module4_liquidity_provision_analytics.lp_analytics --help
+python -m module5_dynamic_hedging_of_impermanent_loss.hedge_backtest --help
 ```
 
 ## Assumptions and explicit choices
@@ -418,10 +401,3 @@ Check the documented command-line entry points:
 | `lp_fee_income_usd` | float | USD | Cumulative LP fee income mapped to the hourly grid. |
 | `net_position_pnl_usd` | float | USD | `lp_fee_income_usd - residual_il_usd`. |
 
-## Local verification
-
-Run the full deterministic test suite with:
-
-```bash
-MPLCONFIGDIR="$(pwd)/.cache/matplotlib" .venv/bin/python -m unittest discover -s tests
-```
