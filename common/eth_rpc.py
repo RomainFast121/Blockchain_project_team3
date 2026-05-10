@@ -17,6 +17,7 @@ from time import sleep
 from typing import Any, Iterable
 
 import pandas as pd
+import requests
 from requests import HTTPError, RequestException
 from eth_utils import event_abi_to_log_topic
 from web3 import Web3
@@ -88,6 +89,58 @@ class EthereumArchiveClient:
                 sleep(self.retry_base_delay_seconds * (2**attempt))
                 attempt += 1
         return self._timestamp_cache[block_number]
+
+    def _fetch_block_timestamps_batch(self, block_numbers: list[int]) -> dict[int, datetime]:
+        """Fetch a batch of block timestamps through raw JSON-RPC."""
+
+        payload = [
+            {
+                "jsonrpc": "2.0",
+                "id": index,
+                "method": "eth_getBlockByNumber",
+                "params": [hex(int(block_number)), False],
+            }
+            for index, block_number in enumerate(block_numbers)
+        ]
+        id_to_block = {index: int(block_number) for index, block_number in enumerate(block_numbers)}
+
+        attempt = 0
+        while True:
+            if self.request_spacing_seconds > 0:
+                sleep(self.request_spacing_seconds)
+            try:
+                response = requests.post(
+                    self.rpc_url,
+                    json=payload,
+                    headers={"content-type": "application/json", "accept": "application/json"},
+                )
+                response.raise_for_status()
+                body = response.json()
+                if not isinstance(body, list):
+                    raise ValueError("Batch eth_getBlockByNumber response must be a JSON list.")
+
+                timestamps: dict[int, datetime] = {}
+                for item in body:
+                    if "error" in item:
+                        raise ValueError(f"Batch eth_getBlockByNumber error: {item['error']}")
+
+                    response_id = int(item["id"])
+                    block_number = id_to_block[response_id]
+                    result = item.get("result")
+                    if result is None or "timestamp" not in result:
+                        raise ValueError(f"Missing block timestamp in batch response for block {block_number}.")
+
+                    timestamps[block_number] = datetime.fromtimestamp(int(result["timestamp"], 16), tz=UTC)
+                return timestamps
+            except (RequestException, HTTPError, ValueError):
+                if attempt >= self.retry_attempts:
+                    raise
+            except Exception:
+                if attempt >= self.retry_attempts:
+                    raise
+
+            sleep(self.retry_base_delay_seconds * (2**attempt))
+            attempt += 1
 
     def get_logs(self, event_name: str, from_block: int, to_block: int) -> list[dict[str, Any]]:
         """Fetch and decode logs for one event type over a block interval."""
@@ -245,6 +298,7 @@ class EthereumArchiveClient:
         *,
         stage_label: str = "timestamps",
         progress_seconds: float = 30.0,
+        timestamp_batch_size: int = 1,
     ) -> pd.DataFrame:
         """Return a merge-ready DataFrame of block numbers and timestamps."""
 
@@ -257,20 +311,52 @@ class EthereumArchiveClient:
         last_report_at = started_at
         rows = []
         total_blocks = len(unique_blocks)
-        for index, block_number in enumerate(unique_blocks, start=1):
-            rows.append(
-                {
-                    "block_number": int(block_number),
-                    "block_timestamp": self.get_block_timestamp(int(block_number)),
-                }
-            )
-            now = datetime.now(tz=UTC).timestamp()
-            if progress_seconds > 0 and (index == total_blocks or now - last_report_at >= progress_seconds):
-                print(
-                    f"[{stage_label}] {index:,}/{total_blocks:,} blocks elapsed={int(now - started_at)}s",
-                    flush=True,
+        completed_blocks = 0
+        batch_size = max(1, int(timestamp_batch_size))
+
+        if batch_size == 1:
+            for block_number in unique_blocks:
+                rows.append(
+                    {
+                        "block_number": int(block_number),
+                        "block_timestamp": self.get_block_timestamp(int(block_number)),
+                    }
                 )
-                last_report_at = now
+                completed_blocks += 1
+                now = datetime.now(tz=UTC).timestamp()
+                if progress_seconds > 0 and (completed_blocks == total_blocks or now - last_report_at >= progress_seconds):
+                    print(
+                        f"[{stage_label}] {completed_blocks:,}/{total_blocks:,} blocks elapsed={int(now - started_at)}s",
+                        flush=True,
+                    )
+                    last_report_at = now
+        else:
+            for batch_start in range(0, total_blocks, batch_size):
+                batch_blocks = unique_blocks[batch_start : batch_start + batch_size]
+                pending_batch_blocks = [block for block in batch_blocks if block not in self._timestamp_cache]
+                if pending_batch_blocks:
+                    try:
+                        batched_timestamps = self._fetch_block_timestamps_batch(pending_batch_blocks)
+                        self._timestamp_cache.update(batched_timestamps)
+                    except Exception:
+                        for block_number in pending_batch_blocks:
+                            self._timestamp_cache[block_number] = self.get_block_timestamp(int(block_number))
+
+                for block_number in batch_blocks:
+                    rows.append(
+                        {
+                            "block_number": int(block_number),
+                            "block_timestamp": self._timestamp_cache[int(block_number)],
+                        }
+                    )
+                completed_blocks += len(batch_blocks)
+                now = datetime.now(tz=UTC).timestamp()
+                if progress_seconds > 0 and (completed_blocks == total_blocks or now - last_report_at >= progress_seconds):
+                    print(
+                        f"[{stage_label}] {completed_blocks:,}/{total_blocks:,} blocks elapsed={int(now - started_at)}s",
+                        flush=True,
+                    )
+                    last_report_at = now
 
         print(
             f"[{stage_label}] done rows={len(rows):,} elapsed={int(datetime.now(tz=UTC).timestamp() - started_at)}s",

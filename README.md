@@ -41,22 +41,28 @@ This is the recommended reproducibility path when RPC usage limits prevent a ful
 python -m module1_onchain_data_extraction.data_extraction \
   --rpc-url "YOUR_ARCHIVE_RPC_URL" \
   --smoke-test-days 1 \
-  --log-chunk-size 10
+  --log-chunk-size 10 \
+  --timestamp-batch-size 1
 ```
 
 For free-tier RPC providers, keep `--log-chunk-size 10` or another conservative value. In smoke mode, Module 1 deliberately limits Mint/Burn/Collect history to the smoke window, so the resulting liquidity state is an execution-path validation rather than a full historical reconstruction.
 
-### Option B — full PDF-aligned historical run
+### Option B — paid-tier full-window smoke run
 
-This mode reconstructs liquidity from the pool deployment block and is the academically complete version. It requires an archive RPC plan that can sustain a large historical `eth_getLogs` workload.
+This mode keeps the smoke-style truncation of Mint/Burn/Collect, but stretches the study window across the full sample. It is a practical compromise for paid tiers when the main goal is to finish the six-month pipeline faster.
 
 ```bash
 python -m module1_onchain_data_extraction.data_extraction \
   --rpc-url "YOUR_ARCHIVE_RPC_URL" \
-  --log-chunk-size 2000
+  --smoke-test-days 182 \
+  --log-chunk-size 2000 \
+  --timestamp-batch-size 100 \
+  --skip-validation
 ```
 
 `--log-chunk-size 2000` is appropriate only for a paid or otherwise capable archive RPC tier. If the provider rejects large ranges or rate-limits requests, reduce the chunk size. The free-tier-safe setting used for smoke runs is `10`.
+
+For the academically complete PDF-aligned run, omit `--smoke-test-days` so Mint/Burn/Collect are replayed from the pool deployment block.
 
 If the parquet outputs are the priority and you want Module 1 to skip the two
 validation checks at the end, add:

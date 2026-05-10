@@ -261,6 +261,7 @@ class Module1DecoderTests(unittest.TestCase):
             end_block=1,
             chunk_size=10,
             progress_seconds=0,
+            timestamp_batch_size=1,
         )
         self.assertListEqual(frame.columns.tolist(), SWAP_EVENT_COLUMNS)
         self.assertTrue(frame.empty)
@@ -273,6 +274,7 @@ class Module1DecoderTests(unittest.TestCase):
             end_block=1,
             chunk_size=10,
             progress_seconds=0,
+            timestamp_batch_size=1,
         )
         self.assertListEqual(frame.columns.tolist(), LIQUIDITY_EVENT_COLUMNS)
         self.assertTrue(frame.empty)
@@ -284,6 +286,7 @@ class Module1DecoderTests(unittest.TestCase):
             end_block=1,
             chunk_size=10,
             progress_seconds=0,
+            timestamp_batch_size=1,
         )
         self.assertListEqual(frame.columns.tolist(), COLLECT_EVENT_COLUMNS)
         self.assertTrue(frame.empty)

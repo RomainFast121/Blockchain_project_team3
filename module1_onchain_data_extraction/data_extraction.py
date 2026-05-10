@@ -196,6 +196,15 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Skip the slot0 and tick-state validation checks while still writing all parquet outputs.",
     )
+    parser.add_argument(
+        "--timestamp-batch-size",
+        type=int,
+        default=1,
+        help=(
+            "Number of eth_getBlockByNumber timestamp requests to batch fetch. "
+            "Use 1 for conservative free-tier behavior; use e.g. 50-200 for paid RPC tiers."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -248,6 +257,7 @@ def _attach_block_timestamps(
     timestamp_column: str = "block_timestamp",
     stage_label: str = "timestamps",
     progress_seconds: float = 30.0,
+    timestamp_batch_size: int = 1,
 ) -> pd.DataFrame:
     """Attach UTC block timestamps to a decoded event table."""
 
@@ -258,6 +268,7 @@ def _attach_block_timestamps(
         frame["block_number"].tolist(),
         stage_label=stage_label,
         progress_seconds=progress_seconds,
+        timestamp_batch_size=timestamp_batch_size,
     )
     merged = frame.merge(timestamps, on="block_number", how="left")
     merged[timestamp_column] = pd.to_datetime(merged[timestamp_column], utc=True)
@@ -319,6 +330,7 @@ def _decode_swap_events(
     end_block: int,
     chunk_size: int,
     progress_seconds: float,
+    timestamp_batch_size: int,
 ) -> pd.DataFrame:
     """Decode raw Swap logs into the clean table used throughout the project."""
 
@@ -367,6 +379,7 @@ def _decode_swap_events(
         swaps,
         stage_label="Swap timestamps",
         progress_seconds=progress_seconds,
+        timestamp_batch_size=timestamp_batch_size,
     )
     if swaps.empty:
         return pd.DataFrame(columns=SWAP_EVENT_COLUMNS)
@@ -381,6 +394,7 @@ def _decode_liquidity_events(
     end_block: int,
     chunk_size: int,
     progress_seconds: float,
+    timestamp_batch_size: int,
 ) -> pd.DataFrame:
     """Decode Mint or Burn logs into one uniform liquidity-event table."""
 
@@ -420,6 +434,7 @@ def _decode_liquidity_events(
         frame,
         stage_label=f"{event_name} timestamps",
         progress_seconds=progress_seconds,
+        timestamp_batch_size=timestamp_batch_size,
     )
     return frame[LIQUIDITY_EVENT_COLUMNS]
 
@@ -430,6 +445,7 @@ def _decode_collect_events(
     end_block: int,
     chunk_size: int,
     progress_seconds: float,
+    timestamp_batch_size: int,
 ) -> pd.DataFrame:
     """Decode Collect logs.
 
@@ -472,6 +488,7 @@ def _decode_collect_events(
         frame,
         stage_label="Collect timestamps",
         progress_seconds=progress_seconds,
+        timestamp_batch_size=timestamp_batch_size,
     )
     return frame[COLLECT_EVENT_COLUMNS]
 
@@ -794,6 +811,7 @@ def run_module_1(
     progress_seconds: float,
     smoke_test_days: int | None = None,
     skip_validation: bool = False,
+    timestamp_batch_size: int = 1,
 ) -> Module1Paths:
     """Execute the full Module 1 workflow."""
 
@@ -826,6 +844,7 @@ def run_module_1(
         end_block=end_block,
         chunk_size=log_chunk_size,
         progress_seconds=progress_seconds,
+        timestamp_batch_size=timestamp_batch_size,
     )
     write_parquet(swap_events, paths.swap_events)
     mint_events = _decode_liquidity_events(
@@ -835,6 +854,7 @@ def run_module_1(
         end_block=end_block,
         chunk_size=log_chunk_size,
         progress_seconds=progress_seconds,
+        timestamp_batch_size=timestamp_batch_size,
     )
     burn_events = _decode_liquidity_events(
         client,
@@ -843,6 +863,7 @@ def run_module_1(
         end_block=end_block,
         chunk_size=log_chunk_size,
         progress_seconds=progress_seconds,
+        timestamp_batch_size=timestamp_batch_size,
     )
     collect_events = _decode_collect_events(
         client,
@@ -850,6 +871,7 @@ def run_module_1(
         end_block=end_block,
         chunk_size=log_chunk_size,
         progress_seconds=progress_seconds,
+        timestamp_batch_size=timestamp_batch_size,
     )
 
     mint_burn_events = pd.concat([mint_events, burn_events], ignore_index=True)
@@ -929,6 +951,7 @@ def main() -> None:
         progress_seconds=max(0.0, args.progress_seconds),
         smoke_test_days=args.smoke_test_days,
         skip_validation=args.skip_validation,
+        timestamp_batch_size=args.timestamp_batch_size,
     )
 
 
