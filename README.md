@@ -42,7 +42,8 @@ python -m module1_onchain_data_extraction.data_extraction \
   --rpc-url "YOUR_ARCHIVE_RPC_URL" \
   --smoke-test-days 1 \
   --log-chunk-size 10 \
-  --timestamp-batch-size 1
+  --timestamp-batch-size 20 \
+  --skip-validation
 ```
 
 For free-tier RPC providers, keep `--log-chunk-size 10` or another conservative value. In smoke mode, Module 1 deliberately limits Mint/Burn/Collect history to the smoke window, so the resulting liquidity state is an execution-path validation rather than a full historical reconstruction.
