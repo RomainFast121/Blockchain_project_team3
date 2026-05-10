@@ -90,6 +90,7 @@ class SwapSimulationResult:
     slippage_bps: float
     tick_crosses: int
     ending_price: float
+    input_filled_fraction: float
 
 
 def _amount0_delta(liquidity: Decimal, sqrt_a: Decimal, sqrt_b: Decimal) -> Decimal:
@@ -192,6 +193,7 @@ def _build_result(
     state: SnapshotPoolState,
     direction: str,
     notional_usd: float,
+    requested_input_raw: Decimal,
     total_input_raw: Decimal,
     total_output_raw: Decimal,
     ending_sqrt_price_x96: Decimal,
@@ -225,6 +227,11 @@ def _build_result(
         else float("nan")
     )
     ending_price = float(sqrt_price_x96_to_price_usdc_per_weth(int(ending_sqrt_price_x96)))
+    input_filled_fraction = (
+        float(total_input_raw / requested_input_raw)
+        if requested_input_raw > 0
+        else float("nan")
+    )
 
     return SwapSimulationResult(
         direction=direction,
@@ -239,6 +246,7 @@ def _build_result(
         slippage_bps=slippage_bps,
         tick_crosses=tick_crosses,
         ending_price=ending_price,
+        input_filled_fraction=input_filled_fraction,
     )
 
 
@@ -253,7 +261,8 @@ def simulate_exact_input_swap(
         raise ValueError("direction must be 'buy_weth' or 'sell_weth'")
 
     zero_for_one = direction == "buy_weth"
-    amount_remaining = _input_notional_to_raw_units(state, direction, notional_usd)
+    requested_input_raw = _input_notional_to_raw_units(state, direction, notional_usd)
+    amount_remaining = requested_input_raw
     total_input_raw = Decimal(0)
     total_output_raw = Decimal(0)
     tick_crosses = 0
@@ -304,6 +313,7 @@ def simulate_exact_input_swap(
         state=state,
         direction=direction,
         notional_usd=notional_usd,
+        requested_input_raw=requested_input_raw,
         total_input_raw=total_input_raw,
         total_output_raw=total_output_raw,
         ending_sqrt_price_x96=current_sqrt_price_x96,

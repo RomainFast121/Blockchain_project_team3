@@ -51,6 +51,10 @@ class Module2Paths:
         return self.figure_dir / "fig_2_1_liquidity_profiles.png"
 
     @property
+    def fig_21b(self) -> Path:
+        return self.figure_dir / "fig_2_1b_liquidity_profiles_tiled.png"
+
+    @property
     def fig_22(self) -> Path:
         return self.figure_dir / "fig_2_2_tvl_decomposition.png"
 
@@ -371,6 +375,76 @@ def plot_liquidity_profiles(
     save_figure(fig, path)
 
 
+def plot_liquidity_profiles_tiled(
+    liquidity_snapshots: pd.DataFrame,
+    slot0_snapshots: pd.DataFrame,
+    path: Path,
+) -> None:
+    """Plot an evenly spaced tiled view of liquidity profiles across the sample."""
+
+    set_project_style()
+    ordered_snapshots = slot0_snapshots.sort_values("snapshot_timestamp").reset_index(drop=True)
+    if ordered_snapshots.empty:
+        fig, ax = plt.subplots(figsize=(8, 4))
+        ax.text(0.5, 0.5, "No snapshots available.", ha="center", va="center", transform=ax.transAxes)
+        ax.set_axis_off()
+        save_figure(fig, path)
+        return
+
+    max_panels = 9
+    if len(ordered_snapshots) <= max_panels:
+        selected = ordered_snapshots
+    else:
+        selected_indices = np.linspace(0, len(ordered_snapshots) - 1, max_panels, dtype=int)
+        selected = ordered_snapshots.iloc[selected_indices].reset_index(drop=True)
+
+    panel_count = len(selected)
+    ncols = 3
+    nrows = int(np.ceil(panel_count / ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(18, 4.5 * nrows), sharey=True)
+    axes_array = np.atleast_1d(axes).ravel()
+
+    for axis, snapshot in zip(axes_array, selected.itertuples(index=False), strict=False):
+        snapshot_block = int(snapshot.snapshot_block)
+        profile = expand_liquidity_profile(liquidity_snapshots[liquidity_snapshots["snapshot_block"] == snapshot_block]).copy()
+        profile["price_midpoint"] = (profile["price_lower"] * profile["price_upper"]) ** 0.5
+        current_price = float(snapshot.price_usdc_per_weth)
+
+        profile = profile.replace([np.inf, -np.inf], np.nan).dropna(subset=["price_lower", "price_upper", "price_midpoint", "active_liquidity"])
+        profile = profile[(profile["active_liquidity"] > 0) & (profile["price_midpoint"] > 0)].copy()
+        focus_band = profile[
+            (profile["price_midpoint"] >= current_price * 0.5)
+            & (profile["price_midpoint"] <= current_price * 1.5)
+        ].copy()
+        if not focus_band.empty:
+            profile = focus_band
+
+        if not profile.empty:
+            axis.bar(
+                profile["price_midpoint"],
+                profile["active_liquidity"],
+                width=profile["price_upper"] - profile["price_lower"],
+                alpha=0.65,
+            )
+            x_min = float(profile["price_lower"].min())
+            x_max = float(profile["price_upper"].max())
+            margin = (x_max - x_min) * 0.05 if x_max > x_min else current_price * 0.02
+            axis.set_xlim(x_min - margin, x_max + margin)
+
+        axis.axvline(current_price, color="crimson", linestyle="--", linewidth=1.2)
+        axis.set_title(pd.Timestamp(snapshot.snapshot_timestamp).strftime("%Y-%m-%d"))
+        axis.set_xlabel("USDC per WETH")
+
+    for axis in axes_array[panel_count:]:
+        axis.set_axis_off()
+
+    for row_start in range(0, len(axes_array), ncols):
+        axes_array[row_start].set_ylabel("Active liquidity")
+
+    fig.suptitle("Liquidity profiles across the sample (evenly spaced tiled view)", y=0.995)
+    save_figure(fig, path)
+
+
 def plot_tvl_decomposition(tvl_decomposition: pd.DataFrame, path: Path) -> None:
     """Plot the daily TVL decomposition as a stacked area chart."""
 
@@ -445,6 +519,7 @@ def run_module_2(data_dir: Path, figure_dir: Path) -> Module2Paths:
     write_parquet(tvl_decomposition, paths.tvl_decomposition)
     write_parquet(concentration_metrics, paths.concentration_metrics)
     plot_liquidity_profiles(liquidity_snapshots, slot0_snapshots, reference_snapshots, paths.fig_21)
+    plot_liquidity_profiles_tiled(liquidity_snapshots, slot0_snapshots, paths.fig_21b)
     plot_tvl_decomposition(tvl_decomposition, paths.fig_22)
     plot_ilr_series(concentration_metrics, paths.fig_23)
     plot_lhhi_vs_price(concentration_metrics, paths.fig_24)

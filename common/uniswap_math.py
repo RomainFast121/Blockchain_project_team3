@@ -240,10 +240,11 @@ def synthetic_lp_amounts(
     sqrt_upper = decimal_sqrt(upper)
 
     if price <= lower:
-        return liquidity_human * (sqrt_upper - sqrt_lower), Decimal(0)
-    if price >= upper:
         weth_amount = liquidity_human * ((Decimal(1) / sqrt_lower) - (Decimal(1) / sqrt_upper))
         return Decimal(0), weth_amount
+    if price >= upper:
+        usdc_amount = liquidity_human * (sqrt_upper - sqrt_lower)
+        return usdc_amount, Decimal(0)
 
     usdc_amount = liquidity_human * (sqrt_price - sqrt_lower)
     weth_amount = liquidity_human * ((Decimal(1) / sqrt_price) - (Decimal(1) / sqrt_upper))
@@ -279,9 +280,9 @@ def synthetic_lp_delta(
     sqrt_upper = decimal_sqrt(upper)
 
     if price <= lower:
-        return Decimal(0)
-    if price >= upper:
         return (Decimal(1) / sqrt_lower - Decimal(1) / sqrt_upper) * liquidity_human
+    if price >= upper:
+        return Decimal(0)
 
     return (Decimal(1) / decimal_sqrt(price) - Decimal(1) / sqrt_upper) * liquidity_human
 

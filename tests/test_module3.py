@@ -38,6 +38,7 @@ class Module3SwapSimulatorTests(unittest.TestCase):
         self.assertGreater(result.average_price, result.pool_mid_price)
         self.assertGreaterEqual(result.price_impact_bps, 0.0)
         self.assertGreaterEqual(result.slippage_bps, 0.0)
+        self.assertAlmostEqual(result.input_filled_fraction, 1.0, places=9)
 
     def test_sell_trade_has_positive_impact_metric(self) -> None:
         result = simulate_exact_input_swap(self.state, direction="sell_weth", notional_usd=100_000)
@@ -69,11 +70,40 @@ class Module3SwapSimulatorTests(unittest.TestCase):
         self.assertTrue(math.isnan(result.average_price))
         self.assertTrue(math.isnan(result.price_impact_bps))
         self.assertTrue(math.isnan(result.slippage_bps))
+        self.assertEqual(result.input_filled_fraction, 0.0)
+
+    def test_partial_fill_reports_fraction_below_one(self) -> None:
+        sparse_state = SnapshotPoolState(
+            snapshot_block=3,
+            snapshot_timestamp=pd.Timestamp("2026-01-03", tz="UTC"),
+            sqrt_price_x96=price_usdc_per_weth_to_sqrt_price_x96(2_000),
+            current_tick=0,
+            current_price=2_000.0,
+            active_liquidity=1,
+            initialized_ticks=(),
+            liquidity_net_by_tick={},
+        )
+        result = simulate_exact_input_swap(sparse_state, direction="sell_weth", notional_usd=1_000_000)
+        self.assertLess(result.input_filled_fraction, 1.0)
 
     def test_empty_simulation_grid_keeps_expected_schema(self) -> None:
         result = run_simulation_grid({})
         self.assertListEqual(list(result.columns), SIMULATED_TRADES_COLUMNS)
         self.assertTrue(result.empty)
+
+    def test_simulation_grid_drops_partial_fills(self) -> None:
+        sparse_state = SnapshotPoolState(
+            snapshot_block=4,
+            snapshot_timestamp=pd.Timestamp("2026-01-04", tz="UTC"),
+            sqrt_price_x96=price_usdc_per_weth_to_sqrt_price_x96(2_000),
+            current_tick=0,
+            current_price=2_000.0,
+            active_liquidity=1,
+            initialized_ticks=(),
+            liquidity_net_by_tick={},
+        )
+        result = run_simulation_grid({4: sparse_state})
+        self.assertTrue((result["input_filled_fraction"] >= 0.999999).all())
 
 
 if __name__ == "__main__":

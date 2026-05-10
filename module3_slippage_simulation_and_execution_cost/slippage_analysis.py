@@ -42,6 +42,7 @@ SIMULATED_TRADES_COLUMNS = [
     "slippage_bps",
     "tick_crosses",
     "ending_price",
+    "input_filled_fraction",
 ]
 
 
@@ -136,7 +137,7 @@ def run_simulation_grid(snapshot_states: dict[int, SnapshotPoolState]) -> pd.Dat
                 # In short smoke tests the reconstructed liquidity can be too
                 # sparse for some requested trade sizes. Those cases do not
                 # produce meaningful execution metrics, so we leave them out.
-                if pd.isna(result.average_price):
+                if pd.isna(result.average_price) or result.input_filled_fraction < 0.999999:
                     continue
                 rows.append(
                     {
@@ -150,6 +151,7 @@ def run_simulation_grid(snapshot_states: dict[int, SnapshotPoolState]) -> pd.Dat
                         "slippage_bps": result.slippage_bps,
                         "tick_crosses": result.tick_crosses,
                         "ending_price": result.ending_price,
+                        "input_filled_fraction": result.input_filled_fraction,
                     }
                 )
     return pd.DataFrame(rows, columns=SIMULATED_TRADES_COLUMNS)
@@ -237,7 +239,7 @@ def build_validation_table(
         slot0_row = slot0_before_trade.loc[slot0_before_trade["snapshot_block"] == pre_trade_block].iloc[0]
         state = SnapshotPoolState.from_snapshot_frames(liquidity_frame, slot0_row)
         simulated = simulate_exact_input_swap(state=state, direction=swap.trade_direction, notional_usd=float(swap.notional_usd))
-        if pd.isna(simulated.average_price):
+        if pd.isna(simulated.average_price) or simulated.input_filled_fraction < 0.999999:
             continue
 
         actual_execution_price = abs(float(swap.amount0_usdc) / float(swap.amount1_weth))

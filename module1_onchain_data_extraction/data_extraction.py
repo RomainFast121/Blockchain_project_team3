@@ -253,6 +253,55 @@ def _attach_block_timestamps(
     return merged
 
 
+SWAP_EVENT_COLUMNS = [
+    "block_number",
+    "block_timestamp",
+    "transaction_hash",
+    "log_index",
+    "amount0_raw",
+    "amount0_usdc",
+    "amount1_raw",
+    "amount1_weth",
+    "sqrtPriceX96",
+    "price_usdc_per_weth",
+    "active_liquidity",
+    "tick",
+    "trade_direction",
+    "notional_usd",
+]
+
+LIQUIDITY_EVENT_COLUMNS = [
+    "block_number",
+    "block_timestamp",
+    "transaction_hash",
+    "log_index",
+    "event_type",
+    "owner",
+    "tick_lower",
+    "tick_upper",
+    "liquidity_raw",
+    "amount0_raw",
+    "amount0_usdc",
+    "amount1_raw",
+    "amount1_weth",
+]
+
+COLLECT_EVENT_COLUMNS = [
+    "block_number",
+    "block_timestamp",
+    "transaction_hash",
+    "log_index",
+    "owner",
+    "recipient",
+    "tick_lower",
+    "tick_upper",
+    "amount0_raw",
+    "amount0_usdc",
+    "amount1_raw",
+    "amount1_weth",
+]
+
+
 def _decode_swap_events(
     client: EthereumArchiveClient,
     start_block: int,
@@ -298,29 +347,15 @@ def _decode_swap_events(
     tracker.chunks_seen = max(1, (end_block - start_block + 1 + chunk_size - 1) // chunk_size)
     tracker.finish()
 
+    if not rows:
+        return pd.DataFrame(columns=SWAP_EVENT_COLUMNS)
+
     swaps = pd.DataFrame(rows).sort_values(["block_number", "log_index"]).reset_index(drop=True)
     swaps = _attach_block_timestamps(client, swaps)
     if swaps.empty:
-        return swaps
+        return pd.DataFrame(columns=SWAP_EVENT_COLUMNS)
 
-    return swaps[
-        [
-            "block_number",
-            "block_timestamp",
-            "transaction_hash",
-            "log_index",
-            "amount0_raw",
-            "amount0_usdc",
-            "amount1_raw",
-            "amount1_weth",
-            "sqrtPriceX96",
-            "price_usdc_per_weth",
-            "active_liquidity",
-            "tick",
-            "trade_direction",
-            "notional_usd",
-        ]
-    ]
+    return swaps[SWAP_EVENT_COLUMNS]
 
 
 def _decode_liquidity_events(
@@ -360,8 +395,12 @@ def _decode_liquidity_events(
 
     tracker.chunks_seen = max(1, (end_block - start_block + 1 + chunk_size - 1) // chunk_size)
     tracker.finish()
+    if not rows:
+        return pd.DataFrame(columns=LIQUIDITY_EVENT_COLUMNS)
+
     frame = pd.DataFrame(rows).sort_values(["block_number", "log_index"]).reset_index(drop=True)
-    return _attach_block_timestamps(client, frame)
+    frame = _attach_block_timestamps(client, frame)
+    return frame[LIQUIDITY_EVENT_COLUMNS]
 
 
 def _decode_collect_events(
@@ -403,8 +442,12 @@ def _decode_collect_events(
 
     tracker.chunks_seen = max(1, (end_block - start_block + 1 + chunk_size - 1) // chunk_size)
     tracker.finish()
+    if not rows:
+        return pd.DataFrame(columns=COLLECT_EVENT_COLUMNS)
+
     frame = pd.DataFrame(rows).sort_values(["block_number", "log_index"]).reset_index(drop=True)
-    return _attach_block_timestamps(client, frame)
+    frame = _attach_block_timestamps(client, frame)
+    return frame[COLLECT_EVENT_COLUMNS]
 
 
 # ---------------------------------------------------------------------------
@@ -535,6 +578,8 @@ def build_liquidity_snapshots(mint_burn_events: pd.DataFrame, snapshot_blocks: p
         running_active_liquidity = 0
         for tick in sorted(liquidity_gross_by_tick):
             running_active_liquidity += liquidity_net_by_tick[tick]
+            price_a = float(tick_to_price_usdc_per_weth(tick))
+            price_b = float(tick_to_price_usdc_per_weth(tick + TICK_SPACING))
             rows.append(
                 {
                     "snapshot_block": int(snapshot.snapshot_block),
@@ -543,8 +588,8 @@ def build_liquidity_snapshots(mint_burn_events: pd.DataFrame, snapshot_blocks: p
                     "liquidityNet": int(liquidity_net_by_tick[tick]),
                     "liquidityGross": int(liquidity_gross_by_tick[tick]),
                     "active_liquidity": int(running_active_liquidity),
-                    "price_lower": float(tick_to_price_usdc_per_weth(tick)),
-                    "price_upper": float(tick_to_price_usdc_per_weth(tick + TICK_SPACING)),
+                    "price_lower": min(price_a, price_b),
+                    "price_upper": max(price_a, price_b),
                 }
             )
 
@@ -656,11 +701,27 @@ def validate_snapshot_against_rpc(
 def _validation_summary(
     slot0_consistency: pd.DataFrame,
     liquidity_validation: pd.DataFrame,
+    swap_events: pd.DataFrame,
+    study_start: date,
+    study_end: date,
 ) -> dict[str, object]:
     """Build the JSON summary saved alongside the parquet outputs."""
 
+    gross_usdc_volume = float(swap_events["amount0_usdc"].abs().sum()) if not swap_events.empty else 0.0
+    gross_weth_volume = float(swap_events["amount1_weth"].abs().sum()) if not swap_events.empty else 0.0
+    total_notional_usd = float(swap_events["notional_usd"].sum()) if not swap_events.empty else 0.0
     return {
         "assumption": "The default study window follows the example given in the project brief: 2025-10-01 to 2026-03-31.",
+        "volume_cross_check": {
+            "study_start": study_start.isoformat(),
+            "study_end": study_end.isoformat(),
+            "first_block": int(swap_events["block_number"].min()) if not swap_events.empty else None,
+            "last_block": int(swap_events["block_number"].max()) if not swap_events.empty else None,
+            "swap_count": int(len(swap_events)),
+            "gross_usdc_volume": gross_usdc_volume,
+            "gross_weth_volume": gross_weth_volume,
+            "total_notional_usd": total_notional_usd,
+        },
         "slot0_consistency_summary": {
             "rows_checked": int(len(slot0_consistency)),
             "all_within_tick_spacing": bool(slot0_consistency["within_tick_spacing"].all()) if not slot0_consistency.empty else None,
@@ -766,7 +827,18 @@ def run_module_1(
     write_parquet(collect_events, paths.collect_events)
     write_parquet(liquidity_snapshots, paths.liquidity_snapshots)
     write_parquet(slot0_snapshots, paths.slot0_snapshots)
-    paths.validations.write_text(json.dumps(_validation_summary(slot0_consistency, liquidity_validation), indent=2))
+    paths.validations.write_text(
+        json.dumps(
+            _validation_summary(
+                slot0_consistency=slot0_consistency,
+                liquidity_validation=liquidity_validation,
+                swap_events=swap_events,
+                study_start=study_start,
+                study_end=study_end,
+            ),
+            indent=2,
+        )
+    )
     print(f"[Module1] outputs written to {paths.output_dir}", flush=True)
 
     return paths

@@ -66,6 +66,22 @@ In smoke-test mode, Module 1 also limits Mint/Burn/Collect history to the same
 small window. This keeps the check practical on free-tier providers. The full
 PDF-aligned run still uses pool-deployment history for liquidity reconstruction.
 
+### Smoke mode versus full-history reconstruction
+
+The teaching staff explicitly allowed smoke-mode execution for this repository
+because RPC usage limits make full historical replay impractical on some free
+tiers. Smoke mode is therefore used as an honest validation of:
+
+- the direct-RPC extraction path,
+- table schemas and downstream joins,
+- plotting code,
+- and end-to-end module integration.
+
+Smoke mode does **not** reconstruct the full deployment-to-window liquidity
+history because it intentionally truncates Mint/Burn/Collect to the selected
+window. A fully PDF-aligned liquidity replay still requires Mint/Burn/Collect
+from the pool deployment block `12,376,729` through the study end date.
+
 2. Module 2
 
 ```bash
@@ -134,6 +150,7 @@ Check the documented command-line entry points:
   `tvl_decomposition.parquet`
   `liquidity_concentration_metrics.parquet`
   `fig_2_1_liquidity_profiles.png`
+  `fig_2_1b_liquidity_profiles_tiled.png`
   `fig_2_2_tvl_decomposition.png`
   `fig_2_3_ilr_timeseries.png`
   `fig_2_4_lhhi_vs_eth_price.png`
