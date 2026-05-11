@@ -15,3 +15,9 @@ data/cache/
 
 # Local notebook / inspection artifacts
 *.ipynb_checkpoints/
+
+# Locally generated packaged artifacts that exceed standard GitHub file limits
+data/module1_swap_outputs.zip
+
+# Local duplicate image exports
+figures/* 2.png

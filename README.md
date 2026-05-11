@@ -125,6 +125,9 @@ artifacts under `data/`.
 - This separation exists because `swap_events.parquet` is by far the largest
   generated artifact and may need to be handled separately depending on the
   Git hosting limits in use.
+- In the current repository state, `data/module1_swap_outputs.zip` is the only
+  packaged artifact intentionally excluded from Git because it remains above
+  GitHub's standard `100 MB` file limit even after normal zip compression.
 
 ## Smoke mode versus full-history reconstruction
 
