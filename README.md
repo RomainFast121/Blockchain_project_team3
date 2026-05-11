@@ -111,6 +111,21 @@ python -m module5_dynamic_hedging_of_impermanent_loss.hedge_backtest
 
 Generated parquet files are written under `data/processed/`; generated figures are written under `figures/`.
 
+## Shared artifact packaging
+
+The repository does not track raw generated parquet outputs under `data/processed/`
+because they are reproducible and can exceed GitHub's per-file size limits. For
+submission and sharing, generated module outputs can instead be packaged as zip
+artifacts under `data/`.
+
+- Modules 2 to 5 are each distributed as one standard zip file.
+- Module 1 is distributed as two standard zip files:
+  - one archive containing only `swap_events.parquet`,
+  - one archive containing the remaining Module 1 outputs.
+- This separation exists because `swap_events.parquet` is by far the largest
+  generated artifact and may need to be handled separately depending on the
+  Git hosting limits in use.
+
 ## Smoke mode versus full-history reconstruction
 
 The teaching staff explicitly allowed smoke-mode execution for this repository because RPC usage limits make full historical replay impractical on some free tiers. Smoke mode is therefore used as an honest validation of:
