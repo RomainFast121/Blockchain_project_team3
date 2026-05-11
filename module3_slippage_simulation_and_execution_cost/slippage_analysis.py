@@ -44,6 +44,24 @@ SIMULATED_TRADES_COLUMNS = [
     "ending_price",
     "input_filled_fraction",
 ]
+VALIDATION_COLUMNS = [
+    "direction",
+    "size_bucket_usd",
+    "block_number",
+    "actual_execution_price",
+    "simulated_execution_price",
+    "percentage_error",
+]
+OBSERVED_EFFECTIVE_SPREAD_COLUMNS = [
+    "block_number",
+    "block_timestamp",
+    "direction",
+    "notional_usd",
+    "size_bucket_usd",
+    "execution_price",
+    "mid_price_prior_block",
+    "effective_spread_bps",
+]
 
 
 @dataclass(frozen=True)
@@ -175,6 +193,18 @@ def _sample_validation_swaps(swap_events: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def _observed_execution_price(amount0_usdc: float, amount1_weth: float) -> float:
+    """Return the observed execution price implied by the swap legs."""
+
+    amount0 = float(amount0_usdc)
+    amount1 = float(amount1_weth)
+    if not np.isfinite(amount0) or not np.isfinite(amount1):
+        return float("nan")
+    if amount1 == 0.0:
+        return float("nan")
+    return abs(amount0 / amount1)
+
+
 def build_validation_table(
     rpc_url: str,
     pool_address: str,
@@ -190,7 +220,7 @@ def build_validation_table(
 
     sampled_swaps = _sample_validation_swaps(swap_events)
     if sampled_swaps.empty:
-        return pd.DataFrame()
+        return pd.DataFrame(columns=VALIDATION_COLUMNS)
 
     _stage(f"validation: sampled {len(sampled_swaps)} real swaps across direction/size buckets")
     client = EthereumArchiveClient(rpc_url=rpc_url, pool_address=pool_address)
@@ -242,7 +272,9 @@ def build_validation_table(
         if pd.isna(simulated.average_price) or simulated.input_filled_fraction < 0.999999:
             continue
 
-        actual_execution_price = abs(float(swap.amount0_usdc) / float(swap.amount1_weth))
+        actual_execution_price = _observed_execution_price(swap.amount0_usdc, swap.amount1_weth)
+        if not np.isfinite(actual_execution_price) or actual_execution_price <= 0:
+            continue
         percentage_error = abs(simulated.average_price - actual_execution_price) / actual_execution_price * 100
 
         rows.append(
@@ -263,7 +295,7 @@ def build_validation_table(
             )
             last_report_at = now
 
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows, columns=VALIDATION_COLUMNS)
 
 
 def build_effective_spread_dataset(
@@ -295,7 +327,11 @@ def build_effective_spread_dataset(
     for swap in swap_events.itertuples(index=False):
         prior_block = max(int(swap.block_number) - 1, 0)
         pre_trade_mid_price = prior_mid_price[prior_block]
-        execution_price = abs(float(swap.amount0_usdc) / float(swap.amount1_weth))
+        execution_price = _observed_execution_price(swap.amount0_usdc, swap.amount1_weth)
+        if not np.isfinite(execution_price) or execution_price <= 0:
+            continue
+        if not np.isfinite(pre_trade_mid_price) or pre_trade_mid_price <= 0:
+            continue
 
         # Buy and sell costs need the correct sign before turning into basis points.
         direction_sign = 1 if swap.trade_direction == "buy_weth" else -1
@@ -314,7 +350,7 @@ def build_effective_spread_dataset(
             }
         )
 
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows, columns=OBSERVED_EFFECTIVE_SPREAD_COLUMNS)
 
 
 def render_validation_table(validation: pd.DataFrame, path: Path) -> None:
