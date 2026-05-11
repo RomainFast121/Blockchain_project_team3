@@ -13,6 +13,7 @@ from module3_slippage_simulation_and_execution_cost.slippage_analysis import (
     OBSERVED_EFFECTIVE_SPREAD_COLUMNS,
     SIMULATED_TRADES_COLUMNS,
     _observed_execution_price,
+    build_validation_table,
     build_effective_spread_dataset,
     run_simulation_grid,
 )
@@ -132,8 +133,16 @@ class Module3SwapSimulatorTests(unittest.TestCase):
                 self.rpc_url = rpc_url
                 self.pool_address = pool_address
 
-            def call_slot0(self, block_number: int) -> dict[str, int]:
-                return {"sqrtPriceX96": price_usdc_per_weth_to_sqrt_price_x96(2_000)}
+            def call_slot0_many(self, block_numbers, **kwargs):  # noqa: ANN001
+                return {
+                    int(block): {
+                        "sqrtPriceX96": price_usdc_per_weth_to_sqrt_price_x96(2_000),
+                        "tick": 0,
+                        "observation_index": 0,
+                        "unlocked": True,
+                    }
+                    for block in set(block_numbers)
+                }
 
         with patch(
             "module3_slippage_simulation_and_execution_cost.slippage_analysis.EthereumArchiveClient",
@@ -147,6 +156,88 @@ class Module3SwapSimulatorTests(unittest.TestCase):
             )
 
         self.assertListEqual(list(result.columns), OBSERVED_EFFECTIVE_SPREAD_COLUMNS)
+        self.assertTrue(result.empty)
+
+    def test_validation_table_skips_degenerate_sampled_swap(self) -> None:
+        swap_events = pd.DataFrame(
+            [
+                {
+                    "block_number": 10,
+                    "block_timestamp": pd.Timestamp("2026-01-01 00:00:00", tz="UTC"),
+                    "trade_direction": "buy_weth",
+                    "notional_usd": 1_000.0,
+                    "amount0_usdc": 1_000.0,
+                    "amount1_weth": 0.0,
+                }
+            ]
+        )
+        mint_burn_events = pd.DataFrame(
+            columns=[
+                "block_number",
+                "log_index",
+                "event_type",
+                "owner",
+                "tick_lower",
+                "tick_upper",
+                "liquidity_raw",
+                "amount0_raw",
+                "amount0_usdc",
+                "amount1_raw",
+                "amount1_weth",
+            ]
+        )
+
+        class DummyClient:
+            def __init__(self, rpc_url: str, pool_address: str) -> None:
+                self.rpc_url = rpc_url
+                self.pool_address = pool_address
+
+            def get_block_timestamp(self, block_number: int) -> pd.Timestamp:
+                return pd.Timestamp("2026-01-01 00:00:00", tz="UTC")
+
+            def call_slot0_many(self, block_numbers, **kwargs):  # noqa: ANN001
+                return {
+                    int(block): {
+                        "sqrtPriceX96": price_usdc_per_weth_to_sqrt_price_x96(2_000),
+                        "tick": 0,
+                        "observation_index": 0,
+                        "unlocked": True,
+                    }
+                    for block in set(block_numbers)
+                }
+
+        with patch(
+            "module3_slippage_simulation_and_execution_cost.slippage_analysis.EthereumArchiveClient",
+            DummyClient,
+        ):
+            with patch(
+                "module3_slippage_simulation_and_execution_cost.slippage_analysis.build_liquidity_snapshots",
+                return_value=pd.DataFrame(
+                    columns=[
+                        "snapshot_block",
+                        "snapshot_timestamp",
+                        "tick",
+                        "liquidityNet",
+                        "liquidityGross",
+                        "active_liquidity",
+                        "price_lower",
+                        "price_upper",
+                    ]
+                ),
+            ):
+                with patch(
+                    "module3_slippage_simulation_and_execution_cost.slippage_analysis.SnapshotPoolState.from_snapshot_frames",
+                    return_value=self.state,
+                ):
+                    result = build_validation_table(
+                        rpc_url="https://example.invalid",
+                        pool_address="0x0000000000000000000000000000000000000000",
+                        swap_events=swap_events,
+                        mint_burn_events=mint_burn_events,
+                        progress_seconds=0,
+                        slot0_batch_size=10,
+                    )
+
         self.assertTrue(result.empty)
 
 

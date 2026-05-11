@@ -85,6 +85,22 @@ python -m module3_slippage_simulation_and_execution_cost.slippage_analysis \
   --rpc-url "YOUR_ARCHIVE_RPC_URL"
 ```
 
+Module 3 does not use `eth_getLogs`, so `--log-chunk-size` does not apply here.
+The optional `--slot0-batch-size` parameter only batches historical `slot0()`
+calls used for validation and prior-block mid prices. Numerical results stay the
+same as the sequential path if the provider returns the correct historical
+state.
+
+```bash
+python -m module3_slippage_simulation_and_execution_cost.slippage_analysis \
+  --rpc-url "YOUR_ARCHIVE_RPC_URL" \
+  --slot0-batch-size 50 \
+  --progress-seconds 30
+```
+
+If the provider rejects larger slot0 batches, reduce `--slot0-batch-size` to
+`10` or back to `1`.
+
 ```bash
 python -m module4_liquidity_provision_analytics.lp_analytics
 ```

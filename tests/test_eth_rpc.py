@@ -153,6 +153,95 @@ class EthereumRpcClientAutoSplitTests(unittest.TestCase):
         self.assertEqual(sequential_mock.call_count, 2)
         self.assertListEqual(frame["block_number"].tolist(), [12, 13])
 
+    def test_call_slot0_many_batch_size_one_uses_sequential_path(self) -> None:
+        client = object.__new__(EthereumArchiveClient)
+        client.request_spacing_seconds = 0.0
+        client.retry_attempts = 1
+        client.retry_base_delay_seconds = 0.0
+
+        with patch.object(client, "_fetch_slot0_batch") as batch_mock:
+            with patch.object(
+                client,
+                "call_slot0",
+                side_effect=[
+                    {"sqrtPriceX96": 1, "tick": 2, "observation_index": 3, "unlocked": True},
+                    {"sqrtPriceX96": 4, "tick": 5, "observation_index": 6, "unlocked": False},
+                ],
+            ) as sequential_mock:
+                result = client.call_slot0_many([100, 101, 100], batch_size=1, progress_seconds=0)
+
+        batch_mock.assert_not_called()
+        self.assertEqual(sequential_mock.call_count, 2)
+        self.assertEqual(sorted(result.keys()), [100, 101])
+        self.assertEqual(result[100]["tick"], 2)
+
+    def test_call_slot0_many_batch_mode_deduplicates_and_keys_by_block(self) -> None:
+        client = object.__new__(EthereumArchiveClient)
+        client.request_spacing_seconds = 0.0
+        client.retry_attempts = 1
+        client.retry_base_delay_seconds = 0.0
+
+        payload = {
+            100: {"sqrtPriceX96": 1, "tick": 2, "observation_index": 3, "unlocked": True},
+            101: {"sqrtPriceX96": 4, "tick": 5, "observation_index": 6, "unlocked": False},
+        }
+        with patch.object(client, "_fetch_slot0_batch", return_value=payload) as batch_mock:
+            result = client.call_slot0_many([101, 100, 101], batch_size=50, progress_seconds=0)
+
+        batch_mock.assert_called_once_with([100, 101])
+        self.assertEqual(sorted(result.keys()), [100, 101])
+        self.assertEqual(result[101]["tick"], 5)
+
+    def test_fetch_slot0_batch_matches_responses_by_id_not_order(self) -> None:
+        client = object.__new__(EthereumArchiveClient)
+        client.rpc_url = "https://example.invalid"
+        client.pool_address = "0x0000000000000000000000000000000000000001"
+        client._slot0_call_data = "0xdeadbeef"
+        client.request_spacing_seconds = 0.0
+        client.retry_attempts = 1
+        client.retry_base_delay_seconds = 0.0
+
+        with patch.object(
+            client,
+            "_decode_slot0_result",
+            side_effect=lambda raw: {
+                "0xbbb": {"sqrtPriceX96": 22, "tick": 222, "observation_index": 2, "unlocked": False},
+                "0xaaa": {"sqrtPriceX96": 11, "tick": 111, "observation_index": 1, "unlocked": True},
+            }[raw],
+        ):
+            mocked_response = SimpleNamespace(
+                raise_for_status=lambda: None,
+                json=lambda: [
+                    {"jsonrpc": "2.0", "id": 1, "result": "0xbbb"},
+                    {"jsonrpc": "2.0", "id": 0, "result": "0xaaa"},
+                ],
+            )
+            with patch("common.eth_rpc.requests.post", return_value=mocked_response):
+                result = client._fetch_slot0_batch([100, 101])
+
+        self.assertEqual(result[100]["tick"], 111)
+        self.assertEqual(result[101]["tick"], 222)
+
+    def test_call_slot0_many_batch_failure_falls_back_to_sequential(self) -> None:
+        client = object.__new__(EthereumArchiveClient)
+        client.request_spacing_seconds = 0.0
+        client.retry_attempts = 1
+        client.retry_base_delay_seconds = 0.0
+
+        with patch.object(client, "_fetch_slot0_batch", side_effect=RequestException("boom")):
+            with patch.object(
+                client,
+                "call_slot0",
+                side_effect=[
+                    {"sqrtPriceX96": 7, "tick": 8, "observation_index": 9, "unlocked": True},
+                    {"sqrtPriceX96": 10, "tick": 11, "observation_index": 12, "unlocked": False},
+                ],
+            ) as sequential_mock:
+                result = client.call_slot0_many([200, 201], batch_size=2, progress_seconds=0)
+
+        self.assertEqual(sequential_mock.call_count, 2)
+        self.assertEqual(result[200]["tick"], 8)
+
 
 if __name__ == "__main__":
     unittest.main()

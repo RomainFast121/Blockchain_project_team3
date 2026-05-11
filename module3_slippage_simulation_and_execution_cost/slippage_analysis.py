@@ -110,6 +110,15 @@ def parse_args() -> argparse.Namespace:
         default=30,
         help="How often long-running stages print a compact progress update.",
     )
+    parser.add_argument(
+        "--slot0-batch-size",
+        type=int,
+        default=1,
+        help=(
+            "Number of historical slot0 eth_call requests to batch when computing prior-block mid prices. "
+            "Use 1 for conservative sequential behavior; use 50-100 on paid RPC tiers if stable."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -211,6 +220,7 @@ def build_validation_table(
     swap_events: pd.DataFrame,
     mint_burn_events: pd.DataFrame,
     progress_seconds: int = 30,
+    slot0_batch_size: int = 1,
 ) -> pd.DataFrame:
     """Compare simulated execution prices with a small sample of real swaps.
 
@@ -233,29 +243,29 @@ def build_validation_table(
     )
 
     liquidity_before_trade = build_liquidity_snapshots(mint_burn_events, validation_schedule)
-    slot0_before_trade_rows = []
     _stage(f"validation: fetching pre-trade slot0 for {len(validation_schedule)} blocks")
-    start_time = time.monotonic()
-    last_report_at = start_time
-    total_blocks = len(validation_schedule)
-    for index, block in enumerate(validation_schedule["snapshot_block"], start=1):
-        slot0_state = client.call_slot0(int(block))
-        slot0_before_trade_rows.append(
-            {
-                "snapshot_block": int(block),
-                "snapshot_timestamp": pd.Timestamp(client.get_block_timestamp(int(block))),
-                "sqrtPriceX96": slot0_state["sqrtPriceX96"],
-                "price_usdc_per_weth": float(sqrt_price_x96_to_price_usdc_per_weth(int(slot0_state["sqrtPriceX96"]))),
-                "current_tick": slot0_state["tick"],
-            }
+    slot0_before_trade_by_block = client.call_slot0_many(
+        validation_schedule["snapshot_block"].tolist(),
+        batch_size=slot0_batch_size,
+        stage_label="validation slot0",
+        progress_seconds=progress_seconds,
+    )
+    slot0_before_trade_rows = [
+        {
+            "snapshot_block": int(block),
+            "snapshot_timestamp": timestamp,
+            "sqrtPriceX96": slot0_before_trade_by_block[int(block)]["sqrtPriceX96"],
+            "price_usdc_per_weth": float(
+                sqrt_price_x96_to_price_usdc_per_weth(int(slot0_before_trade_by_block[int(block)]["sqrtPriceX96"]))
+            ),
+            "current_tick": slot0_before_trade_by_block[int(block)]["tick"],
+        }
+        for block, timestamp in zip(
+            validation_schedule["snapshot_block"],
+            validation_schedule["snapshot_timestamp"],
+            strict=True,
         )
-        now = time.monotonic()
-        if index == total_blocks or now - last_report_at >= progress_seconds:
-            _stage(
-                "validation slot0: "
-                f"{index}/{total_blocks} blocks elapsed={int(now - start_time)}s"
-            )
-            last_report_at = now
+    ]
     slot0_before_trade = pd.DataFrame(slot0_before_trade_rows)
 
     rows: list[dict[str, object]] = []
@@ -303,25 +313,23 @@ def build_effective_spread_dataset(
     pool_address: str,
     swap_events: pd.DataFrame,
     progress_seconds: int = 30,
+    slot0_batch_size: int = 1,
 ) -> pd.DataFrame:
     """Compute observed effective spreads using the prior-block mid price."""
 
     client = EthereumArchiveClient(rpc_url=rpc_url, pool_address=pool_address)
     prior_blocks = sorted({max(int(block) - 1, 0) for block in swap_events["block_number"]})
     _stage(f"effective spreads: fetching prior-block mid prices for {len(prior_blocks)} unique blocks")
-    prior_mid_price: dict[int, float] = {}
-    start_time = time.monotonic()
-    last_report_at = start_time
-    total_blocks = len(prior_blocks)
-    for index, block in enumerate(prior_blocks, start=1):
-        prior_mid_price[block] = float(sqrt_price_x96_to_price_usdc_per_weth(client.call_slot0(block)["sqrtPriceX96"]))
-        now = time.monotonic()
-        if index == total_blocks or now - last_report_at >= progress_seconds:
-            _stage(
-                "effective spreads slot0: "
-                f"{index}/{total_blocks} blocks elapsed={int(now - start_time)}s"
-            )
-            last_report_at = now
+    slot0_by_block = client.call_slot0_many(
+        prior_blocks,
+        batch_size=slot0_batch_size,
+        stage_label="effective spreads slot0",
+        progress_seconds=progress_seconds,
+    )
+    prior_mid_price = {
+        block: float(sqrt_price_x96_to_price_usdc_per_weth(slot0["sqrtPriceX96"]))
+        for block, slot0 in slot0_by_block.items()
+    }
 
     rows: list[dict[str, object]] = []
     for swap in swap_events.itertuples(index=False):
@@ -478,6 +486,7 @@ def run_module_3(
     rpc_url: str,
     pool_address: str,
     progress_seconds: int = 30,
+    slot0_batch_size: int = 1,
 ) -> Module3Paths:
     """Execute the full Module 3 workflow."""
 
@@ -495,12 +504,14 @@ def run_module_3(
         swap_events=swap_events,
         mint_burn_events=mint_burn_events,
         progress_seconds=progress_seconds,
+        slot0_batch_size=slot0_batch_size,
     )
     observed_spreads = build_effective_spread_dataset(
         rpc_url=rpc_url,
         pool_address=pool_address,
         swap_events=swap_events,
         progress_seconds=progress_seconds,
+        slot0_batch_size=slot0_batch_size,
     )
 
     _stage("writing parquet outputs and figures")
@@ -525,6 +536,7 @@ def main() -> None:
         rpc_url=args.rpc_url,
         pool_address=pool_address,
         progress_seconds=args.progress_seconds,
+        slot0_batch_size=args.slot0_batch_size,
     )
 
 

@@ -60,6 +60,9 @@ class EthereumArchiveClient:
         self.pool_address = Web3.to_checksum_address(self.pool_address)
         self.pool_contract = self.web3.eth.contract(address=self.pool_address, abi=POOL_ABI)
         self._event_abi_by_name = _event_abi_map()
+        slot0_function = self.pool_contract.get_function_by_name("slot0")()
+        self._slot0_call_data = slot0_function._encode_transaction_data()
+        self._slot0_output_types = [output["type"] for output in slot0_function.abi["outputs"]]
 
     @property
     def latest_block(self) -> int:
@@ -376,6 +379,129 @@ class EthereumArchiveClient:
             "observation_index": int(observation_index),
             "unlocked": bool(unlocked),
         }
+
+    def _decode_slot0_result(self, raw_result: str) -> dict[str, Any]:
+        """Decode one raw `eth_call` slot0 result into the standard mapping."""
+
+        decoded = self.web3.codec.decode(self._slot0_output_types, Web3.to_bytes(hexstr=raw_result))
+        sqrt_price_x96, tick, observation_index, _, _, _, unlocked = decoded
+        return {
+            "sqrtPriceX96": int(sqrt_price_x96),
+            "tick": int(tick),
+            "observation_index": int(observation_index),
+            "unlocked": bool(unlocked),
+        }
+
+    def _fetch_slot0_batch(self, block_numbers: list[int]) -> dict[int, dict[str, Any]]:
+        """Fetch a batch of historical slot0 calls through raw JSON-RPC."""
+
+        payload = [
+            {
+                "jsonrpc": "2.0",
+                "id": index,
+                "method": "eth_call",
+                "params": [
+                    {"to": self.pool_address, "data": self._slot0_call_data},
+                    hex(int(block_number)),
+                ],
+            }
+            for index, block_number in enumerate(block_numbers)
+        ]
+        id_to_block = {index: int(block_number) for index, block_number in enumerate(block_numbers)}
+
+        attempt = 0
+        while True:
+            if self.request_spacing_seconds > 0:
+                sleep(self.request_spacing_seconds)
+            try:
+                response = requests.post(
+                    self.rpc_url,
+                    json=payload,
+                    headers={"content-type": "application/json", "accept": "application/json"},
+                )
+                response.raise_for_status()
+                body = response.json()
+                if not isinstance(body, list):
+                    raise ValueError("Batch eth_call slot0 response must be a JSON list.")
+
+                slot0_by_block: dict[int, dict[str, Any]] = {}
+                for item in body:
+                    if "error" in item:
+                        raise ValueError(f"Batch slot0 eth_call error: {item['error']}")
+
+                    response_id = int(item["id"])
+                    block_number = id_to_block[response_id]
+                    raw_result = item.get("result")
+                    if raw_result is None:
+                        raise ValueError(f"Missing slot0 result in batch response for block {block_number}.")
+                    slot0_by_block[block_number] = self._decode_slot0_result(raw_result)
+                return slot0_by_block
+            except (RequestException, HTTPError, ValueError):
+                if attempt >= self.retry_attempts:
+                    raise
+            except Exception:
+                if attempt >= self.retry_attempts:
+                    raise
+
+            sleep(self.retry_base_delay_seconds * (2**attempt))
+            attempt += 1
+
+    def call_slot0_many(
+        self,
+        block_numbers: Iterable[int],
+        *,
+        batch_size: int = 1,
+        stage_label: str = "slot0",
+        progress_seconds: float = 30.0,
+    ) -> dict[int, dict[str, Any]]:
+        """Fetch slot0 for many historical blocks, optionally using batch RPC."""
+
+        unique_blocks = sorted({int(value) for value in block_numbers})
+        if not unique_blocks:
+            return {}
+
+        print(f"[{stage_label}] starting {len(unique_blocks):,} unique blocks", flush=True)
+        started_at = datetime.now(tz=UTC).timestamp()
+        last_report_at = started_at
+        total_blocks = len(unique_blocks)
+        completed_blocks = 0
+        chunk_size = max(1, int(batch_size))
+        slot0_by_block: dict[int, dict[str, Any]] = {}
+
+        if chunk_size <= 1:
+            for block_number in unique_blocks:
+                slot0_by_block[block_number] = self.call_slot0(block_number)
+                completed_blocks += 1
+                now = datetime.now(tz=UTC).timestamp()
+                if progress_seconds > 0 and (completed_blocks == total_blocks or now - last_report_at >= progress_seconds):
+                    print(
+                        f"[{stage_label}] {completed_blocks:,}/{total_blocks:,} blocks elapsed={int(now - started_at)}s",
+                        flush=True,
+                    )
+                    last_report_at = now
+        else:
+            for batch_start in range(0, total_blocks, chunk_size):
+                batch_blocks = unique_blocks[batch_start : batch_start + chunk_size]
+                try:
+                    slot0_batch = self._fetch_slot0_batch(batch_blocks)
+                except Exception:
+                    slot0_batch = {block_number: self.call_slot0(block_number) for block_number in batch_blocks}
+                for block_number in batch_blocks:
+                    slot0_by_block[block_number] = slot0_batch[block_number]
+                completed_blocks += len(batch_blocks)
+                now = datetime.now(tz=UTC).timestamp()
+                if progress_seconds > 0 and (completed_blocks == total_blocks or now - last_report_at >= progress_seconds):
+                    print(
+                        f"[{stage_label}] {completed_blocks:,}/{total_blocks:,} blocks elapsed={int(now - started_at)}s",
+                        flush=True,
+                    )
+                    last_report_at = now
+
+        print(
+            f"[{stage_label}] done rows={len(slot0_by_block):,} elapsed={int(datetime.now(tz=UTC).timestamp() - started_at)}s",
+            flush=True,
+        )
+        return {block_number: slot0_by_block[block_number] for block_number in unique_blocks}
 
     def call_tick_state(self, block_number: int, tick: int) -> dict[str, Any]:
         """Call `ticks(tick)` at a historical block."""
